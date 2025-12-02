@@ -29,3 +29,19 @@ pub async fn stream_file(file_path: impl AsRef<Path>) -> Result<Body, FileStream
 
     Ok(body)
 }
+
+pub async fn stream_remote_file(url: &str) -> Result<Body, anyhow::Error> {
+    let response = reqwest::get(url).await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Failed to fetch remote file: HTTP {}",
+            response.status()
+        ));
+    }
+
+    let stream = response.bytes_stream();
+    let body = Body::from_stream(stream);
+
+    Ok(body)
+}

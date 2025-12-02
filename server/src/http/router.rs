@@ -1,13 +1,14 @@
 use crate::http::{model::TabRequestParams, x402};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use log::error;
 use rust_sdk_4mica::U256;
+use serde::Deserialize;
 use server::x402::FacilitatorClient;
 use std::sync::Arc;
 
@@ -19,9 +20,15 @@ pub struct AppState {
     pub facilitator: Arc<FacilitatorClient>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RemoteStreamQuery {
+    url: String,
+}
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/tab", post(handle_tab))
+        .route("/stream/remote", get(handle_remote_stream))
         .route("/stream/:filename", get(handle_stream))
         .with_state(state)
 }
@@ -48,7 +55,7 @@ async fn handle_stream(
     headers: HeaderMap,
 ) -> Response {
     // Verify the file path before charging for the file
-    let file_path = match server::fs::verify_file(&state.config.file_directory, &filename) {
+    let file_path = match server::io::verify_file(&state.config.file_directory, &filename) {
         Ok(file_path) => file_path,
         Err(e) => {
             error!("Failed to verify file path: {}", e);
@@ -65,7 +72,7 @@ async fn handle_stream(
         return err;
     }
 
-    match server::stream_file(&file_path).await {
+    match server::io::stream_file(&file_path).await {
         Ok(body) => (StatusCode::OK, body).into_response(),
         Err(e) => {
             use server::FileStreamError;
@@ -81,6 +88,35 @@ async fn handle_stream(
             };
 
             (status, message).into_response()
+        }
+    }
+}
+
+async fn handle_remote_stream(
+    State(state): State<AppState>,
+    Query(query): Query<RemoteStreamQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let url = query.url;
+
+    // We don't want to charge for playlist files
+    let is_playlist = url.ends_with(".m3u8");
+    if !is_playlist
+        && let Err(err) =
+            x402::handle_x402_paywall(&state, U256::from(100), url.clone(), headers).await
+    {
+        return err;
+    }
+
+    match server::io::stream_remote_file(&url).await {
+        Ok(body) => (StatusCode::OK, body).into_response(),
+        Err(e) => {
+            error!("Failed to stream remote file: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch remote file",
+            )
+                .into_response()
         }
     }
 }

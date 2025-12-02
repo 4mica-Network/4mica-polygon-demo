@@ -17,6 +17,8 @@ npm-debug.log*
 pnpm-lock.yaml
 *.env
 *.env_*
+!.env.default
+!.env.example
 out/
 cache/
 .cargo/
@@ -51,3 +53,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+data/
