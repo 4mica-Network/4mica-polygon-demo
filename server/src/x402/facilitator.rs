@@ -124,7 +124,7 @@ impl FacilitatorClient {
     /// Sends a `POST /verify` request to the facilitator.
     pub async fn verify(
         &self,
-        request: &FacilitatorVerifyParams,
+        request: &FacilitatorVerifyParams<'_>,
     ) -> Result<FacilitatorVerifyResponse, FacilitatorClientError> {
         self.post_json(&self.verify_url, "POST /verify", request)
             .await
@@ -133,7 +133,7 @@ impl FacilitatorClient {
     /// Sends a `POST /settle` request to the facilitator.
     pub async fn settle(
         &self,
-        request: &FacilitatorSettleParams,
+        request: &FacilitatorSettleParams<'_>,
     ) -> Result<FacilitatorSettleResponse, FacilitatorClientError> {
         self.post_json(&self.settle_url, "POST /settle", request)
             .await

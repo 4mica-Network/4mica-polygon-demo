@@ -29,4 +29,7 @@ pub enum PaymentError {
 
     #[error("Settlement failed: {0}")]
     SettlementFailed(String),
+
+    #[error("No matching payment requirements found for scheme: {scheme}, network: {network}")]
+    NoMatchingRequirements { scheme: String, network: String },
 }

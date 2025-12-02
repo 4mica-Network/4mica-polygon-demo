@@ -1,15 +1,25 @@
 use rust_sdk_4mica::x402::PaymentRequirements;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FacilitatorVerifyParams {
+pub struct PaymentEnvelope {
     pub x402_version: u64,
-    pub payment_header: String,
-    pub payment_requirements: PaymentRequirements,
+    pub scheme: String,
+    pub network: String,
+    pub payload: Value,
 }
 
-pub type FacilitatorSettleParams = FacilitatorVerifyParams;
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacilitatorVerifyParams<'a> {
+    pub x402_version: u64,
+    pub payment_header: &'a str,
+    pub payment_requirements: &'a PaymentRequirements,
+}
+
+pub type FacilitatorSettleParams<'a> = FacilitatorVerifyParams<'a>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -3,8 +3,8 @@ use url::Url;
 
 #[derive(Envconfig, Debug, Clone)]
 pub struct X402Config {
-    #[envconfig(from = "X402_SCHEME", default = "4mica-credit")]
-    pub scheme: String,
+    #[envconfig(from = "X402_SCHEME_4MICA", default = "4mica-credit")]
+    pub scheme_4mica: String,
 
     #[envconfig(from = "X402_NETWORK", default = "polygon-amoy")]
     pub network: String,

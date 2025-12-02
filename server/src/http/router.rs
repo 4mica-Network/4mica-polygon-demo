@@ -61,7 +61,7 @@ async fn handle_stream(
         }
     };
 
-    let payment_requirements = server::x402::build_payment_requirement(
+    let payment_requirements = server::x402::build_accepted_payment_requirements(
         &config.x402,
         U256::from(100),
         tab_endpoint.to_string(),
@@ -72,7 +72,7 @@ async fn handle_stream(
         return (
             StatusCode::PAYMENT_REQUIRED,
             Json(PaymentRequiredResponse {
-                x402_version: 1,
+                x402_version: server::x402::X402_VERSION,
                 accepts: payment_requirements,
                 error: None,
             }),
@@ -86,7 +86,7 @@ async fn handle_stream(
             return (
                 StatusCode::PAYMENT_REQUIRED,
                 Json(PaymentRequiredResponse {
-                    x402_version: 1,
+                    x402_version: server::x402::X402_VERSION,
                     accepts: payment_requirements,
                     error: Some("Invalid x-payment header".to_string()),
                 }),
@@ -95,18 +95,14 @@ async fn handle_stream(
         }
     };
 
-    if let Err(e) = server::x402::settle_payment(
-        payment_header,
-        payment_requirements[0].clone(),
-        &facilitator,
-    )
-    .await
+    if let Err(e) =
+        server::x402::settle_payment(&payment_header, &payment_requirements, &facilitator).await
     {
         error!("Payment settlement failed: {}", e);
         return (
             StatusCode::PAYMENT_REQUIRED,
             Json(PaymentRequiredResponse {
-                x402_version: 1,
+                x402_version: server::x402::X402_VERSION,
                 accepts: payment_requirements,
                 error: Some(format!("Payment settlement failed: {}", e)),
             }),
