@@ -12,10 +12,31 @@ pub use facilitator::{FacilitatorClient, FacilitatorClientError};
 
 use crate::{
     error::PaymentError,
-    x402::model::{FacilitatorSettleParams, PaymentEnvelope},
+    x402::model::{
+        FacilitatorSettleParams, FacilitatorTabRequestParams, FacilitatorTabResponse,
+        PaymentEnvelope,
+    },
 };
 
 pub const X402_VERSION: u64 = 1;
+
+pub async fn request_tab(
+    user_address: String,
+    payment_requirements: PaymentRequirements,
+    facilitator: &FacilitatorClient,
+) -> Result<FacilitatorTabResponse, PaymentError> {
+    let tab_request = FacilitatorTabRequestParams {
+        user_address,
+        recipient_address: payment_requirements.pay_to,
+        erc20_token: payment_requirements.asset,
+        ttl_seconds: Some(86400), // 1 day TTL
+    };
+
+    facilitator
+        .request_tab(&tab_request)
+        .await
+        .map_err(PaymentError::from)
+}
 
 pub fn build_accepted_payment_requirements(
     config: &X402Config,

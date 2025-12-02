@@ -1,13 +1,13 @@
-use crate::http::x402;
+use crate::http::{model::TabRequestParams, x402};
 use axum::{
     Json, Router,
-    extract::{FromRef, Path, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use log::error;
-use rust_sdk_4mica::{U256, x402::TabRequestParams};
+use rust_sdk_4mica::U256;
 use server::x402::FacilitatorClient;
 use std::sync::Arc;
 
@@ -19,18 +19,6 @@ pub struct AppState {
     pub facilitator: Arc<FacilitatorClient>,
 }
 
-impl FromRef<AppState> for Arc<Config> {
-    fn from_ref(state: &AppState) -> Self {
-        state.config.clone()
-    }
-}
-
-impl FromRef<AppState> for Arc<FacilitatorClient> {
-    fn from_ref(state: &AppState) -> Self {
-        state.facilitator.clone()
-    }
-}
-
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/tab", post(handle_tab))
@@ -38,8 +26,20 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn handle_tab(Json(_body): Json<TabRequestParams>) -> impl IntoResponse {
-    StatusCode::OK
+async fn handle_tab(State(state): State<AppState>, Json(body): Json<TabRequestParams>) -> Response {
+    let tab = server::x402::request_tab(
+        body.user_address,
+        body.payment_requirements,
+        &state.facilitator,
+    )
+    .await;
+    match tab {
+        Ok(tab) => (StatusCode::OK, Json(tab)).into_response(),
+        Err(e) => {
+            error!("Failed to request tab: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
 }
 
 async fn handle_stream(

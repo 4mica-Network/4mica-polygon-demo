@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use rust_sdk_4mica::x402::PaymentRequirements;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,4 +45,37 @@ pub struct FacilitatorSettleResponse {
     pub tx_hash: Option<String>,
     pub network_id: Option<String>,
     pub certificate: Option<FourMicaCertificate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacilitatorTabRequestParams {
+    pub user_address: String,
+    pub recipient_address: String,
+    pub erc20_token: String,
+    pub ttl_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacilitatorTabResponse {
+    pub tab_id: String,
+    pub user_address: String,
+    pub recipient_address: String,
+    pub asset_address: String,
+    pub start_timestamp: i64,
+    pub ttl_seconds: i64,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct TabKey {
+    pub user_address: String,
+    pub recipient_address: String,
+    pub asset_address: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedTab {
+    pub tab: FacilitatorTabResponse,
+    pub expires_at: DateTime<Utc>,
 }

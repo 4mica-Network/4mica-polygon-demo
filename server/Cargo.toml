@@ -7,11 +7,13 @@ edition.workspace = true
 anyhow = "1.0.100"
 axum = "0.8.7"
 base64 = "0.22.1"
+chrono = "0.4.42"
 dotenv = "0.15.0"
 env_logger = "0.11.8"
 envconfig = "0.11.0"
 http = "1.4.0"
 log = "0.4.28"
+parking_lot = "0.12.5"
 reqwest = "0.12.24"
 rust-sdk-4mica = "0.3.3"
 serde = { version = "1.0.228", features = ["derive"] }
