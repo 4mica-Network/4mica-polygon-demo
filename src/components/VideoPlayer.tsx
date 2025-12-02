@@ -21,8 +21,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, onReady }) => {
 
       videoRef.current?.appendChild(videoElement)
 
-      setupXhrOverride(handlePayment)
-
       const player = videojs(videoElement, {
         controls: true,
         autoplay: false,
@@ -33,6 +31,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, onReady }) => {
             overrideNative: true,
           },
         },
+      })
+
+      player.on('xhr-hooks-ready', () => {
+        setupXhrOverride(handlePayment, player)
       })
 
       playerRef.current = player

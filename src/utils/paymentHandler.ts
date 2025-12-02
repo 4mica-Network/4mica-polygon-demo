@@ -9,5 +9,6 @@ type Response = {
 }
 
 export const handlePayment = async (response: Response, options: XhrOptions): Promise<string> => {
-  throw new Error('Payment handler not implemented')
+  console.log('handlePayment...')
+  return 'fake-payment-header'
 }

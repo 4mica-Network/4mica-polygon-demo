@@ -76,5 +76,6 @@ pub async fn handle_x402_paywall(
         )
             .into_response());
     }
+
     Ok(())
 }

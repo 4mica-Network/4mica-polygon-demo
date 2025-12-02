@@ -11,6 +11,7 @@ use rust_sdk_4mica::U256;
 use serde::Deserialize;
 use server::x402::FacilitatorClient;
 use std::sync::Arc;
+use tower_http::cors::CorsLayer;
 
 use super::config::Config;
 
@@ -29,8 +30,9 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/tab", post(handle_tab))
         .route("/stream/remote", get(handle_remote_stream))
-        .route("/stream/:filename", get(handle_stream))
+        .route("/stream/{filename}", get(handle_stream))
         .with_state(state)
+        .layer(CorsLayer::permissive())
 }
 
 async fn handle_tab(State(state): State<AppState>, Json(body): Json<TabRequestParams>) -> Response {
@@ -65,7 +67,8 @@ async fn handle_stream(
 
     // We don't want to charge for playlist files
     let is_playlist = filename.ends_with(".m3u8");
-    if !is_playlist
+    if state.config.x402.enabled
+        && !is_playlist
         && let Err(err) =
             x402::handle_x402_paywall(&state, U256::from(100), filename.clone(), headers).await
     {
@@ -101,7 +104,8 @@ async fn handle_remote_stream(
 
     // We don't want to charge for playlist files
     let is_playlist = url.ends_with(".m3u8");
-    if !is_playlist
+    if state.config.x402.enabled
+        && !is_playlist
         && let Err(err) =
             x402::handle_x402_paywall(&state, U256::from(100), url.clone(), headers).await
     {
@@ -111,7 +115,7 @@ async fn handle_remote_stream(
     match server::io::stream_remote_file(&url).await {
         Ok(body) => (StatusCode::OK, body).into_response(),
         Err(e) => {
-            error!("Failed to stream remote file: {}", e);
+            error!("Failed to stream remote file: {}, Error: {}", url, e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch remote file",

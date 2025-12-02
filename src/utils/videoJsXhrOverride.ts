@@ -1,41 +1,58 @@
-import videojs from 'video.js'
-
-type XhrOptions = {
-  uri?: string
-  headers?: Record<string, string>
-  [key: string]: any
-}
+import { config } from '../config/env'
+import type { XhrUriConfig } from 'xhr'
 
 type XhrCallback = (error: any, response: any, body: any) => void
 
-type XhrFunction = (options: XhrOptions, callback: XhrCallback) => any
+type PaymentHandler = (response: any, options: XhrUriConfig) => Promise<string>
 
-type PaymentHandler = (response: any, options: XhrOptions) => Promise<string>
+export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): void => {
+  console.log('Overriding VHS XHR...')
 
-export const setupXhrOverride = (paymentHandler: PaymentHandler): void => {
-  const originalXhr = (videojs as any).Vhs && ((videojs as any).Vhs.xhr as XhrFunction | undefined)
-
+  const originalXhr = player.tech().vhs.xhr
   if (!originalXhr) {
-    console.warn('VHS XHR not available. HLS playback may not work correctly.')
+    console.error('Original XHR not found')
     return
   }
 
-  const customXhr: XhrFunction = function (options: XhrOptions, callback: XhrCallback) {
+  const customXhr = function (options: XhrUriConfig, callback: XhrCallback) {
+    let modifiedOptions: XhrUriConfig
+    if (options.uri) {
+      const encodedUrl = encodeURIComponent(options.uri)
+      modifiedOptions = {
+        ...options,
+        uri: `${config.streamServerUrl}/stream/remote?url=${encodedUrl}`,
+      }
+    } else {
+      modifiedOptions = options
+    }
+
     const customCallback: XhrCallback = (error, response, body) => {
       if (!response) {
         return callback(error, response, body)
       }
 
-      if (response.statusCode === 402) {
+      Object.defineProperty(response, 'url', {
+        value: options.uri,
+        writable: true,
+      })
+
+      // Some browsers/libraries use responseURL as well
+      if (response.responseURL) {
+        Object.defineProperty(response, 'responseURL', {
+          value: options.uri,
+          writable: true,
+        })
+      }
+
+      if (response.status === 402) {
         console.log('402 Payment Required. Handling payment...')
 
         paymentHandler(response, options)
-          .then(newToken => {
-            options = options || {}
-            options.headers = options.headers || {}
-            options.headers['x-payment'] = newToken
+          .then(paymentHeader => {
+            modifiedOptions.headers = modifiedOptions.headers || {}
+            modifiedOptions.headers['x-payment'] = paymentHeader
 
-            originalXhr(options, callback)
+            originalXhr(modifiedOptions, callback)
           })
           .catch(err => {
             console.error('Payment failed', err)
@@ -48,11 +65,11 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler): void => {
       return callback(error, response, body)
     }
 
-    return originalXhr(options, customCallback)
+    return originalXhr(modifiedOptions, customCallback)
   }
 
   Object.keys(originalXhr).forEach(key => {
     ;(customXhr as any)[key] = (originalXhr as any)[key]
   })
-  ;(videojs as any).Vhs.xhr = customXhr
+  player.tech().vhs.xhr = customXhr
 }

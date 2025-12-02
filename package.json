@@ -12,7 +12,8 @@
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "video.js": "^8.23.4"
+    "video.js": "^8.23.4",
+    "xhr": "^2.6.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

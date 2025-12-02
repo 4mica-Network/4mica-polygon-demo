@@ -3,6 +3,9 @@ use url::Url;
 
 #[derive(Envconfig, Debug, Clone)]
 pub struct X402Config {
+    #[envconfig(from = "X402_ENABLED", default = "true")]
+    pub enabled: bool,
+
     #[envconfig(from = "X402_SCHEME_4MICA", default = "4mica-credit")]
     pub scheme_4mica: String,
 
