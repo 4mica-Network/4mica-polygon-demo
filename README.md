@@ -1,16 +1,45 @@
-# React + Vite
+# 4mica x Polygon Demo
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Pay-per-segment video streaming on Polygon-Amoy, powered by 4mica.
 
-Currently, two official plugins are available:
+This demo showcases how content providers can monetize HLS video streams using the x402 payment standard. Viewers pay for each video segment they watch, with payments processed through 4mica's facilitator and settled on Polygon-Amoy.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Setup
 
-## React Compiler
+Copy `.env.default` to `.env` and update the values:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+cp .env.default .env
+```
 
-## Expanding the ESLint configuration
+### Environment Variables
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+**Server:**
+
+- `X402_ENABLED` - Enable x402 payment flow
+- `X402_PAY_TO` - Wallet address to receive payments
+
+**Client:**
+
+- `VITE_PLAYLIST_URL` - HLS playlist URL for the video stream
+- `VITE_WALLET_PRIVATE_KEY` - Wallet private key for payments
+- `VITE_STREAM_SERVER_URL` - Stream server URL (default: http://localhost:3000)
+
+## Running the Demo
+
+**Start the server:**
+
+```bash
+cargo run -p server
+```
+
+**Start the client:**
+
+```bash
+yarn install
+yarn dev
+```
+
+## Customization
+
+To stream a different video, update `VITE_PLAYLIST_URL` in your `.env` file with any HLS playlist address.
