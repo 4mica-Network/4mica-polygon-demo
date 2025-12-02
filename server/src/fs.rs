@@ -1,10 +1,10 @@
 use axum::body::Body;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio_util::io::ReaderStream;
 
 use crate::error::FileStreamError;
 
-pub async fn stream_file(base_directory: &str, filename: &str) -> Result<Body, FileStreamError> {
+pub fn verify_file(base_directory: &str, filename: &str) -> Result<PathBuf, FileStreamError> {
     let file_path = Path::new(base_directory).join(filename);
 
     if !file_path.exists() {
@@ -19,7 +19,11 @@ pub async fn stream_file(base_directory: &str, filename: &str) -> Result<Body, F
         return Err(FileStreamError::AccessDenied);
     }
 
-    let file = tokio::fs::File::open(&file_path).await?;
+    Ok(file_path)
+}
+
+pub async fn stream_file(file_path: impl AsRef<Path>) -> Result<Body, FileStreamError> {
+    let file = tokio::fs::File::open(file_path.as_ref()).await?;
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 

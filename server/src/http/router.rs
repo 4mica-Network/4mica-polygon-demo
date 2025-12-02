@@ -1,3 +1,4 @@
+use crate::http::x402;
 use axum::{
     Json, Router,
     extract::{FromRef, Path, State},
@@ -9,8 +10,6 @@ use log::error;
 use rust_sdk_4mica::{U256, x402::TabRequestParams};
 use server::x402::FacilitatorClient;
 use std::sync::Arc;
-
-use crate::http::model::PaymentRequiredResponse;
 
 use super::config::Config;
 
@@ -44,73 +43,29 @@ async fn handle_tab(Json(_body): Json<TabRequestParams>) -> impl IntoResponse {
 }
 
 async fn handle_stream(
-    State(config): State<Arc<Config>>,
-    State(facilitator): State<Arc<FacilitatorClient>>,
+    State(state): State<AppState>,
     Path(filename): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let tab_endpoint = match config.server_advertised_url.join("/tab") {
-        Ok(tab_endpoint) => tab_endpoint,
+    // Verify the file path before charging for the file
+    let file_path = match server::fs::verify_file(&state.config.file_directory, &filename) {
+        Ok(file_path) => file_path,
         Err(e) => {
-            error!("Failed to construct tab endpoint: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to construct tab endpoint",
-            )
-                .into_response();
+            error!("Failed to verify file path: {}", e);
+            return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
         }
     };
 
-    let payment_requirements = server::x402::build_accepted_payment_requirements(
-        &config.x402,
-        U256::from(100),
-        tab_endpoint.to_string(),
-        Some(filename.clone()),
-    );
-
-    let Some(payment_header) = headers.get("x-payment") else {
-        return (
-            StatusCode::PAYMENT_REQUIRED,
-            Json(PaymentRequiredResponse {
-                x402_version: server::x402::X402_VERSION,
-                accepts: payment_requirements,
-                error: None,
-            }),
-        )
-            .into_response();
-    };
-    let payment_header = match payment_header.to_str() {
-        Ok(s) => s.to_string(),
-        Err(e) => {
-            error!("Invalid x-payment header: {}", e);
-            return (
-                StatusCode::PAYMENT_REQUIRED,
-                Json(PaymentRequiredResponse {
-                    x402_version: server::x402::X402_VERSION,
-                    accepts: payment_requirements,
-                    error: Some("Invalid x-payment header".to_string()),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    if let Err(e) =
-        server::x402::settle_payment(&payment_header, &payment_requirements, &facilitator).await
+    // We don't want to charge for playlist files
+    let is_playlist = filename.ends_with(".m3u8");
+    if !is_playlist
+        && let Err(err) =
+            x402::handle_x402_paywall(&state, U256::from(100), filename.clone(), headers).await
     {
-        error!("Payment settlement failed: {}", e);
-        return (
-            StatusCode::PAYMENT_REQUIRED,
-            Json(PaymentRequiredResponse {
-                x402_version: server::x402::X402_VERSION,
-                accepts: payment_requirements,
-                error: Some(format!("Payment settlement failed: {}", e)),
-            }),
-        )
-            .into_response();
+        return err;
     }
 
-    match server::stream_file(&config.file_directory, &filename).await {
+    match server::stream_file(&file_path).await {
         Ok(body) => (StatusCode::OK, body).into_response(),
         Err(e) => {
             use server::FileStreamError;
