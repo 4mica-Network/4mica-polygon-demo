@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type Player from 'video.js/dist/types/player'
-import { Contract, formatEther, parseEther, parseUnits } from 'ethers'
+import { Contract, formatEther, formatUnits, isAddress, parseUnits } from 'ethers'
 import VideoPlayer from './components/VideoPlayer'
 import { config } from './config/env'
 import { TARGET_CHAIN_ID, useWallet } from './context/WalletContext'
@@ -8,18 +8,28 @@ import { createPaymentHandler } from './utils/paymentHandler'
 import core4micaAbi from 'sdk-4mica/dist/abi/core4mica.json'
 import * as fourMica from 'sdk-4mica'
 
+const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  const f = globalThis.fetch as any
+  if (typeof f !== 'function') throw new Error('global fetch not available')
+  return f.call(globalThis, input, init)
+}
+
 function App() {
   const [playerReady, setPlayerReady] = useState<boolean>(false)
   const { address, chainId, isConnecting, error, isConnected, connect, disconnect, signer, switchToTargetChain } = useWallet()
   const [balance, setBalance] = useState<string | null>(null)
   const [balanceLoading, setBalanceLoading] = useState(false)
-  const [depositAmount, setDepositAmount] = useState('0.1')
-  const [selectedToken, setSelectedToken] = useState<'matic' | 'erc20'>('matic')
+  const [depositAmount, setDepositAmount] = useState('10')
+  const [depositMode, setDepositMode] = useState<'default' | 'custom'>('default')
   const [tokenAddress, setTokenAddress] = useState('')
+  const [tokenDecimals, setTokenDecimals] = useState('18')
   const [depositLoading, setDepositLoading] = useState(false)
   const [logs, setLogs] = useState<string[]>([])
   const [coreParams, setCoreParams] = useState<fourMica.CorePublicParameters | null>(null)
   const [paramsLoading, setParamsLoading] = useState(false)
+  const [tokenBalances, setTokenBalances] = useState<
+    { address: string; symbol: string; balance: string; decimals: number }[]
+  >([])
 
   const getSigner = useCallback(async () => signer, [signer])
   const paymentHandler = useMemo(() => createPaymentHandler(getSigner), [getSigner])
@@ -41,12 +51,12 @@ function App() {
     })
   }
 
-  const appendLog = (entry: string) => {
+  const appendLog = useCallback((entry: string) => {
     setLogs(prev => {
       const next = [`${new Date().toLocaleTimeString()} — ${entry}`, ...prev]
       return next.slice(0, 100)
     })
-  }
+  }, [])
 
   const fetchBalance = useCallback(async () => {
     if (!signer || !address) return
@@ -61,11 +71,12 @@ function App() {
     } finally {
       setBalanceLoading(false)
     }
-  }, [signer, address])
+  }, [signer, address, appendLog])
 
   useEffect(() => {
     if (!isConnected) {
       setBalance(null)
+      setTokenBalances([])
       return
     }
     fetchBalance()
@@ -77,7 +88,7 @@ function App() {
       if (!isConnected) return
       setParamsLoading(true)
       try {
-        const rpc = new fourMica.RpcProxy(config.rpcUrl)
+        const rpc = new fourMica.RpcProxy(config.rpcUrl, undefined, boundFetch as any)
         const p = await rpc.getPublicParams()
         if (active) setCoreParams(p)
       } catch (err) {
@@ -90,19 +101,120 @@ function App() {
     return () => {
       active = false
     }
-  }, [isConnected])
+  }, [isConnected, appendLog])
+
+  const trackedTokens = useMemo(() => {
+    const tokens = new Set<string>()
+    if (config.defaultTokenAddress) tokens.add(config.defaultTokenAddress.toLowerCase())
+    if (depositMode === 'custom' && tokenAddress) tokens.add(tokenAddress.toLowerCase())
+    return Array.from(tokens)
+  }, [depositMode, tokenAddress])
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchTokenBalances = async () => {
+      if (!signer || !isConnected || trackedTokens.length === 0) {
+        setTokenBalances([])
+        return
+      }
+      const provider = signer.provider
+      if (!provider) return
+
+      const results: { address: string; symbol: string; balance: string; decimals: number }[] = []
+      for (const addr of trackedTokens) {
+        try {
+          const erc20 = new Contract(
+            addr,
+            ['function symbol() view returns (string)', 'function decimals() view returns (uint8)', 'function balanceOf(address) view returns (uint256)'],
+            provider
+          )
+          const [symbol, decimalsValue, raw] = await Promise.all([
+            erc20.symbol(),
+            erc20.decimals(),
+            erc20.balanceOf(address),
+          ])
+          results.push({
+            address: addr,
+            symbol,
+            decimals: Number(decimalsValue),
+            balance: formatUnits(raw, decimalsValue),
+          })
+        } catch (err) {
+          appendLog(`Token balance failed for ${addr}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      if (!cancelled) {
+        setTokenBalances(results)
+      }
+    }
+    fetchTokenBalances()
+    return () => {
+      cancelled = true
+    }
+  }, [signer, isConnected, trackedTokens, address, appendLog])
+
+  const resolveTokenMeta = useCallback(
+    async (tokenAddr: string) => {
+      if (!signer?.provider) {
+        throw new Error('Wallet provider unavailable')
+      }
+      const erc20 = new Contract(
+        tokenAddr,
+        ['function symbol() view returns (string)', 'function decimals() view returns (uint8)'],
+        signer.provider
+      )
+      try {
+        const [symbol, decimalsValue] = await Promise.all([erc20.symbol(), erc20.decimals()])
+        return { symbol: String(symbol), decimals: Number(decimalsValue) || 18 }
+      } catch (err) {
+        appendLog(`Token metadata fetch failed for ${tokenAddr}: ${err instanceof Error ? err.message : String(err)}`)
+        return null
+      }
+    },
+    [signer, appendLog]
+  )
+
+  const ensureAllowance = useCallback(
+    async (tokenAddr: string, required: bigint, decimals: number) => {
+      if (!signer || !address || !coreParams) {
+        throw new Error('Wallet not ready for approval')
+      }
+
+      const erc20 = new Contract(
+        tokenAddr,
+        [
+          'function allowance(address owner, address spender) view returns (uint256)',
+          'function approve(address spender, uint256 amount) returns (bool)',
+        ],
+        signer
+      )
+      const current: bigint = await erc20.allowance(address, coreParams.contractAddress)
+      if (current >= required) {
+        appendLog('Existing allowance is sufficient; skipping approval.')
+        return
+      }
+
+      appendLog(`Requesting token approval for ${formatUnits(required, decimals)}…`)
+      const approveTx = await erc20.approve(coreParams.contractAddress, required)
+      appendLog(`Approve submitted: ${approveTx.hash}`)
+      const receipt = await approveTx.wait()
+      appendLog(`Approve confirmed in block ${receipt?.blockNumber ?? 'unknown'}`)
+    },
+    [signer, address, coreParams, appendLog]
+  )
 
   const handleDeposit = async () => {
     if (!signer || !address) {
       appendLog('Connect wallet before depositing.')
       return
     }
-    if (chainId !== TARGET_CHAIN_ID) {
-      appendLog('Switch to Polygon Amoy (80002) before depositing.')
-      return
-    }
     if (!coreParams) {
       appendLog('Missing 4mica contract parameters; try again.')
+      return
+    }
+    const requiredChainId = coreParams.chainId ?? TARGET_CHAIN_ID
+    if (chainId !== requiredChainId) {
+      appendLog(`Switch to chain ${requiredChainId} before depositing.`)
       return
     }
     const amount = depositAmount.trim()
@@ -110,8 +222,20 @@ function App() {
       appendLog('Enter a valid amount greater than 0.')
       return
     }
-    if (selectedToken === 'erc20' && !tokenAddress) {
-      appendLog('Enter an ERC20 token address.')
+    const useDefaultToken = depositMode === 'default'
+    const defaultTokenAddress = config.defaultTokenAddress
+
+    if (useDefaultToken && (!defaultTokenAddress || !isAddress(defaultTokenAddress))) {
+      appendLog('Default token address not configured or invalid. Please enter a token address.')
+      return
+    }
+
+    if (!useDefaultToken && !tokenAddress) {
+      appendLog('Enter a token address.')
+      return
+    }
+    if (!useDefaultToken && !isAddress(tokenAddress)) {
+      appendLog('Enter a valid token address.')
       return
     }
 
@@ -123,13 +247,22 @@ function App() {
         signer
       )
 
+      const tokenToUse = useDefaultToken ? defaultTokenAddress : tokenAddress
+      const meta = await resolveTokenMeta(tokenToUse)
+      const decimals = meta?.decimals ?? (useDefaultToken ? 6 : Number(tokenDecimals) || 18)
+      const parsedAmount = parseUnits(amount, decimals)
+      const tokenLabel = meta?.symbol ?? tokenToUse
+      appendLog(`Preparing deposit of ${formatUnits(parsedAmount, decimals)} ${tokenLabel} (${decimals} decimals)`)
+
+      await ensureAllowance(tokenToUse, parsedAmount, decimals)
+
       let tx
-      if (selectedToken === 'matic') {
-        tx = await contract.deposit({ value: parseEther(amount) })
-        appendLog(`Deposit submitted (MATIC): ${tx.hash}`)
+      if (useDefaultToken) {
+        tx = await contract.depositStablecoin(defaultTokenAddress, parsedAmount)
+        appendLog(`Deposit submitted (USDC default): ${tx.hash}`)
       } else {
-        tx = await contract.depositStablecoin(tokenAddress, parseUnits(amount, 18))
-        appendLog(`Deposit submitted (ERC20): ${tx.hash}`)
+        tx = await contract.depositStablecoin(tokenAddress, parsedAmount)
+        appendLog(`Deposit submitted (custom token ${tokenLabel}): ${tx.hash}`)
       }
       const receipt = await tx.wait()
       appendLog(`Deposit confirmed in block ${receipt?.blockNumber ?? 'unknown'}`)
@@ -220,6 +353,7 @@ function App() {
 
   const renderPlayerScreen = () => {
     const onWrongChain = chainId !== null && chainId !== TARGET_CHAIN_ID
+    const defaultTokenAddress = config.defaultTokenAddress
     return (
       <div className='grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)_320px]'>
         <div className='bg-gray-800/90 border border-white/10 rounded-2xl p-5 shadow-xl flex flex-col gap-4'>
@@ -241,52 +375,87 @@ function App() {
             <div className='text-sm text-gray-300 flex items-center justify-between'>
               <span>Balance</span>
               <span className='text-gray-100 font-semibold'>
-                {balanceLoading ? 'Loading…' : balance ? `${Number(balance).toFixed(4)} MATIC` : '—'}
+                {balanceLoading ? 'Loading…' : balance ? `${Number(balance).toFixed(4)} POL` : '—'}
               </span>
             </div>
+            {tokenBalances.length > 0 && (
+              <div className='text-sm text-gray-300'>
+                <div className='mb-1'>Token balances</div>
+                <div className='space-y-1'>
+                  {tokenBalances.map(tb => (
+                    <div key={tb.address} className='flex items-center justify-between text-xs bg-white/5 border border-white/5 rounded px-2 py-1'>
+                      <span className='text-gray-200'>{tb.symbol}</span>
+                      <span className='text-gray-100 font-semibold'>{Number(tb.balance).toFixed(4)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className='space-y-3'>
-            <div className='text-gray-200 font-semibold'>Deposit to 4mica</div>
+            <div className='text-gray-200 font-semibold flex items-center justify-between'>
+              <span>Deposit to 4mica</span>
+              <span className='text-xs text-gray-400'>Default: USDC</span>
+            </div>
             <div className='grid grid-cols-2 gap-2 text-sm'>
               <button
-                onClick={() => setSelectedToken('matic')}
+                onClick={() => setDepositMode('default')}
                 className={`rounded-lg px-3 py-2 border ${
-                  selectedToken === 'matic'
-                    ? 'border-indigo-400 bg-indigo-500/20 text-white'
+                  depositMode === 'default'
+                    ? 'border-emerald-400 bg-emerald-500/20 text-white'
                     : 'border-white/10 text-gray-300'
                 }`}
               >
-                MATIC
+                USDC (default)
               </button>
               <button
-                onClick={() => setSelectedToken('erc20')}
+                onClick={() => setDepositMode('custom')}
                 className={`rounded-lg px-3 py-2 border ${
-                  selectedToken === 'erc20'
+                  depositMode === 'custom'
                     ? 'border-indigo-400 bg-indigo-500/20 text-white'
                     : 'border-white/10 text-gray-300'
                 }`}
               >
-                ERC20
+                Custom token
               </button>
             </div>
 
-            {selectedToken === 'erc20' && (
-              <input
-                value={tokenAddress}
-                onChange={e => setTokenAddress(e.target.value)}
-                placeholder='ERC20 token address'
-                className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
-              />
+            {depositMode === 'default' ? (
+              <div className='text-xs text-gray-300'>
+                Using USDC (6 decimals)
+                {defaultTokenAddress && <div className='mt-1 break-all text-gray-400'>Address: {defaultTokenAddress}</div>}
+              </div>
+            ) : (
+              <>
+                <div className='text-xs text-gray-400'>Token address</div>
+                <input
+                  value={tokenAddress}
+                  onChange={e => setTokenAddress(e.target.value)}
+                  placeholder='Token address (0x...)'
+                  className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
+                />
+                <div className='text-xs text-gray-400'>Token decimals (e.g., 6 or 18)</div>
+                <input
+                  type='number'
+                  min='0'
+                  max='36'
+                  value={tokenDecimals}
+                  onChange={e => setTokenDecimals(e.target.value)}
+                  placeholder='Token decimals'
+                  className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
+                />
+              </>
             )}
 
+            <div className='text-xs text-gray-400'>Deposit amount</div>
             <input
               type='number'
               min='0'
               step='0.01'
               value={depositAmount}
               onChange={e => setDepositAmount(e.target.value)}
-              placeholder='Amount'
+              placeholder='Amount to deposit'
               className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
             />
             <button
