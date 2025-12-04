@@ -1,6 +1,6 @@
 import * as fourMica from 'sdk-4mica'
 import { config } from '../config/env'
-import { Signer, Wallet, AbiCoder, getBytes } from 'ethers'
+import { Signer, Wallet, AbiCoder, getBytes, JsonRpcProvider } from 'ethers'
 
 type XhrOptions = {
   uri?: string
@@ -90,19 +90,35 @@ const encodeEip191 = (claims: PaymentGuaranteeRequestClaims): Uint8Array => {
   return getBytes(payload)
 }
 
-const resolveSigner = async (getWalletSigner: SignerResolver): Promise<{ signer: Signer; address: string; source: 'wallet' | 'env' }> => {
+const resolveSigner = async (
+  getWalletSigner: SignerResolver,
+  params: CorePublicParameters
+): Promise<{ signer: Signer; address: string; source: 'wallet' | 'env' }> => {
+  const envKey = config.walletPrivateKey?.trim()
+  if (envKey) {
+    try {
+      const rpcUrl = params.ethereumHttpRpcUrl || undefined
+      const provider = rpcUrl ? new JsonRpcProvider(rpcUrl) : undefined
+      const envSigner = provider ? new Wallet(envKey, provider) : new Wallet(envKey)
+      const address = await envSigner.getAddress()
+      return { signer: envSigner, address, source: 'env' }
+    } catch (err) {
+      console.warn('[x402] env signer init failed', err)
+    }
+  }
+
   const walletSigner = await getWalletSigner()
   if (walletSigner) {
     const address = await walletSigner.getAddress()
     return { signer: walletSigner, address, source: 'wallet' }
   }
 
-  throw new Error('No signer available. Connect a wallet to continue.')
+  throw new Error('No signer available. Add VITE_WALLET_PRIVATE_KEY or connect a wallet.')
 }
 
 const buildFlow = async (getWalletSigner: SignerResolver) => {
   const publicParams = await ensureParams()
-  const { signer, address, source } = await resolveSigner(getWalletSigner)
+  const { signer, address, source } = await resolveSigner(getWalletSigner, publicParams)
 
   const flowSigner = {
     signPayment: async (claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) => {
