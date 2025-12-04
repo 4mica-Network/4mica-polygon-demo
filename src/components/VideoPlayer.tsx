@@ -2,15 +2,16 @@ import { useEffect, useRef } from 'react'
 import videojs from 'video.js'
 import type Player from 'video.js/dist/types/player'
 import 'video.js/dist/video-js.css'
-import { setupXhrOverride } from '../utils/videoJsXhrOverride'
+import { PaymentEvents, setupXhrOverride } from '../utils/videoJsXhrOverride'
 
 interface VideoPlayerProps {
   src: string
   onReady?: (player: Player) => void
   paymentHandler: (response: any, options: any, body?: any) => Promise<string>
+  paymentEvents?: PaymentEvents
 }
 
-const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, onReady, paymentHandler }) => {
+const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, onReady, paymentHandler, paymentEvents }) => {
   const videoRef = useRef<HTMLDivElement>(null)
   const playerRef = useRef<Player | null>(null)
 
@@ -34,7 +35,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, onReady, paymentHandler 
       })
 
       player.on('xhr-hooks-ready', () => {
-        setupXhrOverride(paymentHandler, player)
+        setupXhrOverride(paymentHandler, player, paymentEvents)
       })
 
       playerRef.current = player
@@ -43,7 +44,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, onReady, paymentHandler 
         onReady(player)
       }
     }
-  }, [onReady])
+  }, [onReady, paymentEvents, paymentHandler])
 
   useEffect(() => {
     const player = playerRef.current

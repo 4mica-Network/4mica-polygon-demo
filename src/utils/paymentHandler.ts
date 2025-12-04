@@ -1,6 +1,6 @@
 import * as fourMica from 'sdk-4mica'
 import { config } from '../config/env'
-import { Signer, Wallet, AbiCoder, getBytes, JsonRpcProvider } from 'ethers'
+import { Signer, Wallet, AbiCoder, getBytes, JsonRpcProvider, formatUnits } from 'ethers'
 
 type XhrOptions = {
   uri?: string
@@ -266,7 +266,11 @@ const withFixedTabEndpoint = (requirements: PaymentRequirements): PaymentRequire
 
 export const createPaymentHandler =
   (getWalletSigner: SignerResolver) =>
-  async (response: Response, options: XhrOptions, body?: any): Promise<string> => {
+  async (
+    response: Response,
+    options: XhrOptions,
+    body?: any
+  ): Promise<{ header: string; amountDisplay: string }> => {
     console.log('[x402] handlePayment: received 402')
     const rawRequirements = await getPaymentRequirements(response, options, body)
     const requirements = withFixedTabEndpoint(rawRequirements)
@@ -277,5 +281,21 @@ export const createPaymentHandler =
     const signed = await flow.signPayment(requirements, userAddress)
     console.log('[x402] signed payment header length', signed.header.length)
 
-    return signed.header
+    const amountRaw = (() => {
+      try {
+        return BigInt((requirements as any).maxAmountRequired ?? 0n)
+      } catch {
+        return 0n
+      }
+    })()
+    const assetAddr = (requirements as any).asset ?? ''
+    const isDefaultAsset =
+      assetAddr &&
+      config.defaultTokenAddress &&
+      assetAddr.toLowerCase() === config.defaultTokenAddress.toLowerCase()
+    const decimals = isDefaultAsset ? 6 : 18
+    const symbol = isDefaultAsset ? 'USDC' : assetAddr ? assetAddr.slice(0, 6) + '…' + assetAddr.slice(-4) : 'POL'
+    const amountDisplay = `${formatUnits(amountRaw, decimals)} ${symbol}`
+
+    return { header: signed.header, amountDisplay }
   }

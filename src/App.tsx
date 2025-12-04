@@ -24,7 +24,9 @@ function App() {
   const [tokenAddress, setTokenAddress] = useState('')
   const [tokenDecimals, setTokenDecimals] = useState('18')
   const [depositLoading, setDepositLoading] = useState(false)
-  const [logs, setLogs] = useState<string[]>([])
+  type LogTone = 'info' | 'warn' | 'success' | 'error'
+  type LogEntry = { text: string; tone: LogTone; at: string }
+  const [logs, setLogs] = useState<LogEntry[]>([])
   const [coreParams, setCoreParams] = useState<fourMica.CorePublicParameters | null>(null)
   const [paramsLoading, setParamsLoading] = useState(false)
   const [tokenBalances, setTokenBalances] = useState<
@@ -34,9 +36,6 @@ function App() {
     { asset: string; symbol: string; decimals: number; collateral: string; withdrawalRequested: string }[]
   >([])
   const [collateralLoading, setCollateralLoading] = useState(false)
-
-  const getSigner = useCallback(async () => signer, [signer])
-  const paymentHandler = useMemo(() => createPaymentHandler(getSigner), [getSigner])
 
   const handleConnect = async () => {
     try {
@@ -55,12 +54,32 @@ function App() {
     })
   }
 
-  const appendLog = useCallback((entry: string) => {
-    setLogs(prev => {
-      const next = [`${new Date().toLocaleTimeString()} — ${entry}`, ...prev]
-      return next.slice(0, 100)
-    })
-  }, [])
+  const appendLog = useCallback(
+    (entry: string, tone: LogTone = 'info') => {
+      setLogs(prev => {
+        const next = [{ text: entry, tone, at: new Date().toLocaleTimeString() }, ...prev]
+        return next.slice(0, 100)
+      })
+    },
+    []
+  )
+
+  const getSigner = useCallback(async () => signer, [signer])
+  const paymentHandler = useMemo(() => createPaymentHandler(getSigner), [getSigner])
+  const paymentEvents = useMemo(
+    () => ({
+      onPaymentRequested: (chunkId: string, amount?: string) =>
+        appendLog(`#${chunkId} ${amount ? `${amount}` : ''}`, 'warn'),
+      onPaymentSettled: (chunkId: string, amount?: string) =>
+        appendLog(`#${chunkId} ${amount ? `${amount}` : ''}`, 'success'),
+      onPaymentFailed: (chunkId: string, err: unknown, amount?: string) =>
+        appendLog(
+          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${err instanceof Error ? err.message : String(err)}`,
+          'error'
+        ),
+    }),
+    [appendLog]
+  )
 
   const formatAddress = (addr: string | null | undefined) => {
     if (!addr) return '—'
@@ -635,27 +654,49 @@ function App() {
             </div>
           ) : (
             <div className='bg-black rounded-lg overflow-hidden shadow-2xl'>
-              <VideoPlayer src={config.playlistUrl} onReady={handlePlayerReady} paymentHandler={paymentHandler} />
+              <VideoPlayer
+                src={config.playlistUrl}
+                onReady={handlePlayerReady}
+                paymentHandler={paymentHandler}
+                paymentEvents={paymentEvents}
+              />
             </div>
           )}
 
           {playerReady && !onWrongChain && <div className='mt-4 text-center text-gray-400 text-sm'>Player ready</div>}
         </div>
 
-        <div className='bg-slate-900/90 border border-white/10 rounded-2xl p-5 shadow-xl flex flex-col gap-4 max-h-[640px]'>
-          <div className='flex items-center justify-between'>
-            <div className='text-gray-100 font-semibold text-lg'>Activity log</div>
+        <div className='relative overflow-hidden bg-gradient-to-br from-slate-900/90 via-slate-950 to-black border border-white/10 rounded-2xl p-5 shadow-[0_15px_45px_rgba(0,0,0,0.5)] flex flex-col gap-4 max-h-[640px]'>
+          <div className='absolute inset-0 pointer-events-none opacity-40 bg-[radial-gradient(circle_at_20%_20%,rgba(59,130,246,0.2),transparent_35%),radial-gradient(circle_at_80%_10%,rgba(16,185,129,0.2),transparent_25%)]' />
+          <div className='flex items-center justify-between relative z-10'>
+            <div className='text-gray-50 font-semibold text-lg tracking-tight'>Activity log</div>
             <div className='text-xs text-gray-400'>{logs.length} entries</div>
           </div>
-          <div className='rounded-xl bg-black/40 border border-white/5 p-3 text-sm text-gray-200 space-y-2 overflow-y-auto'>
+          <div className='rounded-xl bg-black/40 border border-white/5 p-3 text-sm text-gray-200 space-y-2 overflow-y-auto relative z-10'>
             {logs.length === 0 ? (
               <div className='text-gray-500 text-center py-8'>No activity yet. Deposits, balance fetches, and errors will show here.</div>
             ) : (
-              logs.map((log, idx) => (
-                <div key={idx} className='bg-white/5 rounded px-3 py-2 border border-white/5'>
-                  {log}
-                </div>
-              ))
+              logs.map((log, idx) => {
+                const toneMeta: Record<LogTone, { className: string; label: string; badge: string }> = {
+                  info: { className: 'bg-white/5 border-white/10 text-gray-100', label: 'Info', badge: '•' },
+                  warn: { className: 'bg-amber-500/15 border-amber-400/30 text-amber-100', label: 'Payment requested', badge: '!' },
+                  success: { className: 'bg-emerald-500/15 border-emerald-400/30 text-emerald-100', label: 'Settled', badge: '✓' },
+                  error: { className: 'bg-red-500/15 border-red-400/30 text-red-100', label: 'Error', badge: '×' },
+                }
+                const meta = toneMeta[log.tone]
+                return (
+                  <div key={idx} className={`rounded-lg px-3 py-2 border shadow-sm backdrop-blur-sm space-y-1.5 ${meta.className}`}>
+                    <div className='flex items-center gap-2 text-[11px] uppercase tracking-[0.1em]'>
+                      <span className='inline-flex items-center justify-center h-5 w-5 rounded-full border border-current text-[11px]'>
+                        {meta.badge}
+                      </span>
+                      <span className='font-semibold'>{meta.label}</span>
+                    </div>
+                    <div className='text-sm leading-relaxed text-white/90 break-words'>{log.text}</div>
+                    <div className='text-xs opacity-80 text-right'>{log.at}</div>
+                  </div>
+                )
+              })
             )}
           </div>
         </div>

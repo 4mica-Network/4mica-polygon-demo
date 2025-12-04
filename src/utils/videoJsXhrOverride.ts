@@ -3,9 +3,17 @@ import type { XhrUriConfig } from 'xhr'
 
 type XhrCallback = (error: any, response: any, body: any) => void
 
-type PaymentHandler = (response: any, options: XhrUriConfig, body?: any) => Promise<string>
+type PaymentHandler = (response: any, options: XhrUriConfig, body?: any) => Promise<{ header: string; amountDisplay: string }>
 
-export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): void => {
+export type PaymentEvents = {
+  onPaymentRequested?: (chunkId: string, amount?: string) => void
+  onPaymentSettled?: (chunkId: string, amount?: string) => void
+  onPaymentFailed?: (chunkId: string, error: unknown, amount?: string) => void
+}
+
+let paymentCounter = 0
+
+export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any, events?: PaymentEvents): void => {
   console.log('[x402] Overriding VHS XHR...')
 
   const originalXhr = player.tech().vhs.xhr
@@ -14,8 +22,11 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): v
     return
   }
 
+  const chunkAmounts = new Map<string, string>()
+
   const customXhr = function (options: XhrUriConfig, callback: XhrCallback) {
     console.log('[x402] original XHR called', { uri: options.uri })
+    let chunkId: string | null = null
     let modifiedOptions: XhrUriConfig
     if (options.uri) {
       const encodedUrl = encodeURIComponent(options.uri)
@@ -27,6 +38,8 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): v
     } else {
       modifiedOptions = options
     }
+
+    let awaitingSettlement = false
 
     const customCallback: XhrCallback = (error, response, body) => {
       if (!response) {
@@ -56,24 +69,40 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): v
 
       if (response.status === 402) {
         console.log('[x402] 402 Payment Required. Handling payment...', { uri: options.uri })
-
+        awaitingSettlement = true
+        chunkId = `${++paymentCounter}`
         paymentHandler(response, options, body)
-          .then(paymentHeader => {
+          .then(({ header, amountDisplay }) => {
+            const key = chunkId ?? `${paymentCounter}`
+            chunkAmounts.set(key, amountDisplay)
+            events?.onPaymentRequested?.(key, amountDisplay)
             modifiedOptions.headers = modifiedOptions.headers || {}
-            modifiedOptions.headers['x-payment'] = paymentHeader
+            modifiedOptions.headers['x-payment'] = header
             console.log('[x402] retrying with x-payment header', {
               uri: modifiedOptions.uri,
-              hasHeader: Boolean(paymentHeader),
+              hasHeader: Boolean(header),
             })
 
-            originalXhr(modifiedOptions, callback)
+            originalXhr(modifiedOptions, customCallback)
           })
           .catch(err => {
             console.error('[x402] Payment failed', err)
+            const key = chunkId ?? `${paymentCounter}`
+            const amount = chunkAmounts.get(key)
+            events?.onPaymentFailed?.(key, err, amount)
+            chunkAmounts.delete(key)
             callback(error || err, response, body)
           })
 
         return
+      }
+
+      if (awaitingSettlement && response.status < 400) {
+        const key = chunkId ?? `${paymentCounter}`
+        const amount = chunkAmounts.get(key)
+        events?.onPaymentSettled?.(key, amount)
+        chunkAmounts.delete(key)
+        awaitingSettlement = false
       }
 
       return callback(error, response, body)
