@@ -30,6 +30,10 @@ function App() {
   const [tokenBalances, setTokenBalances] = useState<
     { address: string; symbol: string; balance: string; decimals: number }[]
   >([])
+  const [collateral, setCollateral] = useState<
+    { asset: string; symbol: string; decimals: number; collateral: string; withdrawalRequested: string }[]
+  >([])
+  const [collateralLoading, setCollateralLoading] = useState(false)
 
   const getSigner = useCallback(async () => signer, [signer])
   const paymentHandler = useMemo(() => createPaymentHandler(getSigner), [getSigner])
@@ -57,6 +61,26 @@ function App() {
       return next.slice(0, 100)
     })
   }, [])
+
+  const formatAddress = (addr: string | null | undefined) => {
+    if (!addr) return '—'
+    const prefix = addr.slice(0, 6)
+    const suffix = addr.slice(-4)
+    return `${prefix}...${suffix}`
+  }
+
+  const copyAddress = useCallback(async () => {
+    if (!address) {
+      appendLog('No wallet connected to copy.')
+      return
+    }
+    try {
+      await navigator.clipboard?.writeText(address)
+      appendLog('Wallet address copied.')
+    } catch (err) {
+      appendLog(`Copy failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [address, appendLog])
 
   const fetchBalance = useCallback(async () => {
     if (!signer || !address) return
@@ -174,6 +198,52 @@ function App() {
     [signer, appendLog]
   )
 
+  const fetchCollateral = useCallback(async () => {
+    if (!coreParams || !address || !signer?.provider) return
+    setCollateralLoading(true)
+    try {
+      const contract = new Contract(
+        coreParams.contractAddress,
+        (core4micaAbi as any).abi ?? core4micaAbi,
+        signer.provider
+      )
+      const raw: any[] = await contract.getUserAllAssets(address)
+      const parsed = await Promise.all(
+        raw.map(async item => {
+          const assetAddr = String(item.asset ?? item[0] ?? '')
+          const zeroAddress = '0x0000000000000000000000000000000000000000'
+          if (!assetAddr || !isAddress(assetAddr)) return null
+          const collateralRaw = BigInt(item.collateral ?? item[1] ?? 0)
+          const withdrawalRaw = BigInt(item.withdrawal_request_amount ?? item[3] ?? 0)
+          const isNative = assetAddr.toLowerCase() === zeroAddress
+          const meta = isNative ? { symbol: 'POL', decimals: 18 } : await resolveTokenMeta(assetAddr)
+          const decimals = meta?.decimals ?? 18
+          const symbol = meta?.symbol ?? `${assetAddr.slice(0, 6)}...${assetAddr.slice(-4)}`
+          return {
+            asset: assetAddr,
+            symbol,
+            decimals,
+            collateral: formatUnits(collateralRaw, decimals),
+            withdrawalRequested: formatUnits(withdrawalRaw, decimals),
+          }
+        })
+      )
+      setCollateral(parsed.filter(Boolean) as typeof collateral)
+    } catch (err) {
+      appendLog(`Collateral fetch failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setCollateralLoading(false)
+    }
+  }, [coreParams, address, signer, resolveTokenMeta, appendLog])
+
+  useEffect(() => {
+    if (isConnected) {
+      fetchCollateral()
+    } else {
+      setCollateral([])
+    }
+  }, [isConnected, fetchCollateral])
+
   const ensureAllowance = useCallback(
     async (tokenAddr: string, required: bigint, decimals: number) => {
       if (!signer || !address || !coreParams) {
@@ -267,6 +337,7 @@ function App() {
       const receipt = await tx.wait()
       appendLog(`Deposit confirmed in block ${receipt?.blockNumber ?? 'unknown'}`)
       fetchBalance()
+      fetchCollateral()
     } catch (err) {
       appendLog(`Deposit failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -354,26 +425,84 @@ function App() {
   const renderPlayerScreen = () => {
     const onWrongChain = chainId !== null && chainId !== TARGET_CHAIN_ID
     const defaultTokenAddress = config.defaultTokenAddress
+    const primaryCollateral =
+      collateral.find(c => defaultTokenAddress && c.asset.toLowerCase() === defaultTokenAddress.toLowerCase()) ??
+      collateral[0] ??
+      null
     return (
       <div className='grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)_320px]'>
         <div className='bg-gray-800/90 border border-white/10 rounded-2xl p-5 shadow-xl flex flex-col gap-4'>
-          <div>
-            <div className='text-gray-100 font-semibold text-lg flex items-center gap-2'>
-              <span>Wallet overview</span>
+          <div className='rounded-2xl bg-gradient-to-br from-emerald-500/25 via-teal-500/15 to-indigo-600/15 border border-emerald-400/40 p-4 shadow-lg'>
+            <div className='flex items-start justify-between gap-3'>
+              <div>
+                <div className='text-xs uppercase tracking-[0.12em] text-emerald-100'>4Mica Collateral</div>
+                <div className='text-sm text-emerald-50/80 mt-1'>Deposited to 4Mica core</div>
+              </div>
+              <button
+                onClick={fetchCollateral}
+                disabled={collateralLoading}
+                className='px-3 py-1 rounded-full text-xs font-semibold bg-white/10 text-white border border-white/20 hover:bg-white/20 transition disabled:opacity-60'
+              >
+                {collateralLoading ? 'Refreshing…' : 'Refresh'}
+              </button>
             </div>
-            <div className='text-gray-400 text-sm mt-1 break-all'>{address}</div>
+            <div className='mt-4 flex items-end justify-between'>
+              <div className='text-3xl font-semibold text-white'>
+                {primaryCollateral
+                  ? `${Number(primaryCollateral.collateral || '0').toLocaleString(undefined, { maximumFractionDigits: 4 })} ${primaryCollateral.symbol}`
+                  : '0'}
+              </div>
+              <div
+                className={`px-3 py-1 rounded-full text-xs border ${
+                  collateral.length ? 'bg-emerald-500/20 border-emerald-300/50 text-emerald-100' : 'bg-white/10 border-white/20 text-white/80'
+                }`}
+              >
+                {collateralLoading ? 'Syncing' : collateral.length ? 'Live' : 'No collateral'}
+              </div>
+            </div>
+            {primaryCollateral && Number(primaryCollateral.withdrawalRequested) > 0 && (
+              <div className='mt-2 text-xs text-amber-100 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2'>
+                Withdrawal pending: {Number(primaryCollateral.withdrawalRequested).toFixed(4)} {primaryCollateral.symbol}
+              </div>
+            )}
+            <div className='mt-4 grid gap-2'>
+              {collateral.length === 0 && (
+                <div className='text-sm text-gray-100/90 bg-white/10 border border-white/15 rounded-lg px-3 py-3'>
+                  No collateral on 4Mica yet. Deposit to keep playback uninterrupted.
+                </div>
+              )}
+              {collateral.map(item => (
+                <div key={item.asset} className='flex items-center justify-between text-sm bg-black/30 border border-white/10 rounded-lg px-3 py-2'>
+                  <div className='text-gray-100 font-medium'>{item.symbol}</div>
+                  <div className='text-gray-50 font-semibold'>{Number(item.collateral).toFixed(4)}</div>
+                </div>
+              ))}
+            </div>
           </div>
+
           <div className='rounded-xl bg-white/5 border border-white/10 p-4 space-y-2'>
+            <div className='text-sm text-gray-300 flex items-center justify-between'>
+              <span>Wallet</span>
+              <div className='flex items-center gap-2 text-xs text-gray-200'>
+                <span className='font-medium'>{formatAddress(address)}</span>
+                <button
+                  onClick={copyAddress}
+                  className='px-2 py-1 rounded bg-white/10 border border-white/15 text-[11px] text-white hover:bg-white/20 transition'
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
             <div className='text-sm text-gray-300 flex items-center justify-between'>
               <span>Network</span>
               <span className='px-2 py-1 rounded-full bg-indigo-500/20 text-indigo-100 text-xs'>Polygon Amoy</span>
             </div>
             <div className='text-sm text-gray-300 flex items-center justify-between'>
               <span>Chain ID</span>
-              <span className={onWrongChain ? 'text-yellow-300' : 'text-emerald-300'}>{chainId ?? 'Unknown'}</span>
+              <span className={onWrongChain ? 'text-yellow-300 font-semibold' : 'text-emerald-300 font-semibold'}>{chainId ?? 'Unknown'}</span>
             </div>
             <div className='text-sm text-gray-300 flex items-center justify-between'>
-              <span>Balance</span>
+              <span>Wallet balance</span>
               <span className='text-gray-100 font-semibold'>
                 {balanceLoading ? 'Loading…' : balance ? `${Number(balance).toFixed(4)} POL` : '—'}
               </span>
