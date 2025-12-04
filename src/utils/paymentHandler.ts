@@ -1,7 +1,6 @@
-import { ConfigBuilder, PaymentRequirements, RpcProxy, X402Flow } from 'sdk-4mica'
-import { CorePublicParameters, PaymentSigner, SigningScheme } from 'sdk-4mica'
+import * as fourMica from 'sdk-4mica'
 import { config } from '../config/env'
-import { Wallet } from 'ethers'
+import { Signer, Wallet, AbiCoder, getBytes } from 'ethers'
 
 type XhrOptions = {
   uri?: string
@@ -20,10 +19,12 @@ type PaymentRequiredResponse = {
   error?: string | null
 }
 
-let flow: X402Flow | null = null
-let userAddress: string | null = null
+const { PaymentRequirements, RpcProxy, X402Flow, CorePublicParameters, SigningScheme, PaymentGuaranteeRequestClaims } = fourMica
+
+type SignerResolver = () => Promise<Signer | null>
+
 let params: CorePublicParameters | null = null
-let signer: PaymentSigner | null = null
+let rpcProxy: RpcProxy | null = null
 
 const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const f = globalThis.fetch as any
@@ -33,30 +34,111 @@ const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   return f.call(globalThis, input, init)
 }
 
-const buildFlow = async () => {
-  if (flow && userAddress) return { flow, userAddress }
-  if (!config.walletPrivateKey) {
-    throw new Error('Wallet private key missing; set VITE_WALLET_PRIVATE_KEY')
+const ensureParams = async (): Promise<CorePublicParameters> => {
+  if (params) return params
+  if (!rpcProxy) {
+    rpcProxy = new RpcProxy(config.rpcUrl, undefined, boundFetch as any)
   }
-  const wallet = new Wallet(config.walletPrivateKey)
-  userAddress = wallet.address
-  const cfg = new ConfigBuilder()
-    .walletPrivateKey(config.walletPrivateKey)
-    .rpcUrl(config.rpcUrl)
-    .build()
+  params = await rpcProxy.getPublicParams()
+  return params
+}
 
-  // Use a fetch bound to globalThis to avoid "fetch called on non-Window" issues
-  const rpc = new RpcProxy(cfg.rpcUrl, cfg.adminApiKey, boundFetch as any)
-  params = await rpc.getPublicParams()
-  signer = new PaymentSigner(cfg.walletPrivateKey)
+const buildTypedMessage = (publicParams: CorePublicParameters, claims: PaymentGuaranteeRequestClaims) => ({
+  types: {
+    EIP712Domain: [
+      { name: 'name', type: 'string' },
+      { name: 'version', type: 'string' },
+      { name: 'chainId', type: 'uint256' },
+    ],
+    SolGuaranteeRequestClaimsV1: [
+      { name: 'user', type: 'address' },
+      { name: 'recipient', type: 'address' },
+      { name: 'tabId', type: 'uint256' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'asset', type: 'address' },
+      { name: 'timestamp', type: 'uint64' },
+    ],
+  },
+  primaryType: 'SolGuaranteeRequestClaimsV1',
+  domain: {
+    name: publicParams.eip712Name,
+    version: publicParams.eip712Version,
+    chainId: publicParams.chainId,
+  },
+  message: {
+    user: claims.userAddress,
+    recipient: claims.recipientAddress,
+    tabId: Number(claims.tabId),
+    amount: Number(claims.amount),
+    asset: claims.assetAddress,
+    timestamp: Number(claims.timestamp),
+  },
+})
+
+const encodeEip191 = (claims: PaymentGuaranteeRequestClaims): Uint8Array => {
+  const payload = AbiCoder.defaultAbiCoder().encode(
+    ['address', 'address', 'uint256', 'uint256', 'address', 'uint64'],
+    [
+      claims.userAddress,
+      claims.recipientAddress,
+      claims.tabId,
+      claims.amount,
+      claims.assetAddress,
+      claims.timestamp,
+    ]
+  )
+  return getBytes(payload)
+}
+
+const resolveSigner = async (getWalletSigner: SignerResolver): Promise<{ signer: Signer; address: string; source: 'wallet' | 'env' }> => {
+  const walletSigner = await getWalletSigner()
+  if (walletSigner) {
+    const address = await walletSigner.getAddress()
+    return { signer: walletSigner, address, source: 'wallet' }
+  }
+
+  throw new Error('No signer available. Connect a wallet to continue.')
+}
+
+const buildFlow = async (getWalletSigner: SignerResolver) => {
+  const publicParams = await ensureParams()
+  const { signer, address, source } = await resolveSigner(getWalletSigner)
 
   const flowSigner = {
-    signPayment: (claims: any, scheme: SigningScheme) => signer!.signRequest(params!, claims, scheme),
+    signPayment: async (claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) => {
+      const normalizedAddress = address.toLowerCase()
+      if (normalizedAddress !== claims.userAddress.toLowerCase()) {
+        throw new Error(`Signer address mismatch. Wallet=${address}, claims.userAddress=${claims.userAddress}`)
+      }
+
+      const network = await signer.provider?.getNetwork?.()
+      if (network && Number(network.chainId) !== Number(publicParams.chainId)) {
+        throw new Error(`Wrong network. Switch wallet to chain ${publicParams.chainId}. Current: ${network.chainId}`)
+      }
+
+      if (scheme === SigningScheme.EIP712) {
+        const typed = buildTypedMessage(publicParams, claims)
+        const signature = await (signer as any).signTypedData(
+          typed.domain,
+          { SolGuaranteeRequestClaimsV1: typed.types.SolGuaranteeRequestClaimsV1 },
+          typed.message
+        )
+        return { signature, scheme }
+      }
+
+      if (scheme === SigningScheme.EIP191) {
+        const message = encodeEip191(claims)
+        const signature = await signer.signMessage(message)
+        return { signature, scheme }
+      }
+
+      throw new Error(`Unsupported signing scheme: ${scheme}`)
+    },
   }
 
-  flow = new X402Flow(flowSigner as any, boundFetch as any)
-  console.log('[x402] initialized flow for', userAddress, 'rpc=', cfg.rpcUrl)
-  return { flow, userAddress }
+  const flow = new X402Flow(flowSigner as any, boundFetch as any)
+  console.log('[x402] initialized flow for', address, 'rpc=', config.rpcUrl, 'source=', source)
+  return { flow, userAddress: address }
 }
 
 const parseRequirements = (raw: string): PaymentRequirements => {
@@ -166,20 +248,18 @@ const withFixedTabEndpoint = (requirements: PaymentRequirements): PaymentRequire
   return requirements
 }
 
-export const handlePayment = async (
-  response: Response,
-  options: XhrOptions,
-  body?: any
-): Promise<string> => {
-  console.log('[x402] handlePayment: received 402')
-  const rawRequirements = await getPaymentRequirements(response, options, body)
-  const requirements = withFixedTabEndpoint(rawRequirements)
-  console.log('[x402] parsed requirements', requirements)
+export const createPaymentHandler =
+  (getWalletSigner: SignerResolver) =>
+  async (response: Response, options: XhrOptions, body?: any): Promise<string> => {
+    console.log('[x402] handlePayment: received 402')
+    const rawRequirements = await getPaymentRequirements(response, options, body)
+    const requirements = withFixedTabEndpoint(rawRequirements)
+    console.log('[x402] parsed requirements', requirements)
 
-  const { flow, userAddress } = await buildFlow()
-  console.log('[x402] signing payment for user', userAddress)
-  const signed = await flow.signPayment(requirements, userAddress)
-  console.log('[x402] signed payment header length', signed.header.length)
+    const { flow, userAddress } = await buildFlow(getWalletSigner)
+    console.log('[x402] signing payment for user', userAddress)
+    const signed = await flow.signPayment(requirements, userAddress)
+    console.log('[x402] signed payment header length', signed.header.length)
 
-  return signed.header
-}
+    return signed.header
+  }
