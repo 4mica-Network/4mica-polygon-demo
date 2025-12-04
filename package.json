@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "ethers": "^6.11.1",
+    "sdk-4mica": "file:../ts-sdk-4mica",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "video.js": "^8.23.4",

@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::StatusCode;
-use log::error;
+use log::{error, info, warn};
 use rust_sdk_4mica::U256;
 
 use crate::http::{model::PaymentRequiredResponse, router::AppState};
@@ -15,6 +15,10 @@ pub async fn handle_x402_paywall(
     resource: String,
     headers: HeaderMap,
 ) -> Result<(), Response> {
+    info!(
+        "x402 paywall check: resource={}, price_wei={:#x}",
+        resource, price
+    );
     let tab_endpoint = match state.config.server_advertised_url.join("/tab") {
         Ok(tab_endpoint) => tab_endpoint,
         Err(e) => {
@@ -31,10 +35,11 @@ pub async fn handle_x402_paywall(
         &state.config.x402,
         price,
         tab_endpoint.to_string(),
-        Some(resource),
+        Some(resource.clone()),
     );
 
     let Some(payment_header) = headers.get("x-payment") else {
+        warn!("x402 payment header missing; returning 402 with requirements");
         return Err((
             StatusCode::PAYMENT_REQUIRED,
             Json(PaymentRequiredResponse {
@@ -76,6 +81,11 @@ pub async fn handle_x402_paywall(
         )
             .into_response());
     }
+
+    info!(
+        "x402 payment settled successfully for resource={}",
+        resource
+    );
 
     Ok(())
 }

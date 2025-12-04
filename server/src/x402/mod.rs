@@ -1,5 +1,5 @@
 use base64::{Engine, prelude::BASE64_STANDARD};
-use log::info;
+use log::{debug, info};
 use rust_sdk_4mica::{U256, x402::PaymentRequirements};
 use serde_json::json;
 
@@ -25,6 +25,12 @@ pub async fn request_tab(
     payment_requirements: PaymentRequirements,
     facilitator: &FacilitatorClient,
 ) -> Result<FacilitatorTabResponse, PaymentError> {
+    log::info!(
+        "Requesting tab via facilitator for user={} pay_to={} asset={}",
+        user_address,
+        payment_requirements.pay_to,
+        payment_requirements.asset
+    );
     let tab_request = FacilitatorTabRequestParams {
         user_address,
         recipient_address: payment_requirements.pay_to,
@@ -105,15 +111,31 @@ pub async fn settle_payment(
     accepted_payment_requirements: &[PaymentRequirements],
     facilitator: &FacilitatorClient,
 ) -> Result<(), PaymentError> {
-    let envelope = decode_payment_header(&payment_header)?;
+    let envelope = decode_payment_header(payment_header)?;
+    debug!(
+        "Decoded x402 envelope: version={}, scheme={}, network={}",
+        envelope.x402_version, envelope.scheme, envelope.network
+    );
     let selected_requirement =
         find_matching_payment_requirements(&envelope, accepted_payment_requirements)?;
+    info!(
+        "Matched payment requirements: scheme={}, network={}, pay_to={}, asset={}, max_amount_required={}",
+        selected_requirement.scheme,
+        selected_requirement.network,
+        selected_requirement.pay_to,
+        selected_requirement.asset,
+        selected_requirement.max_amount_required
+    );
 
+    info!(
+        "Calling facilitator /settle for scheme={} network={}",
+        envelope.scheme, envelope.network
+    );
     let settle_response = facilitator
         .settle(&FacilitatorSettleParams {
             x402_version: X402_VERSION,
-            payment_header: payment_header,
-            payment_requirements: &selected_requirement,
+            payment_header,
+            payment_requirements: selected_requirement,
         })
         .await?;
 
@@ -128,6 +150,8 @@ pub async fn settle_payment(
             "Settled payment header successfully, Certificate: {:?}",
             certificate
         );
+    } else {
+        info!("Settled payment header successfully (no certificate returned)");
     }
 
     Ok(())

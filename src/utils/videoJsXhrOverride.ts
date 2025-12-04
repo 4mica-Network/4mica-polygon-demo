@@ -3,10 +3,10 @@ import type { XhrUriConfig } from 'xhr'
 
 type XhrCallback = (error: any, response: any, body: any) => void
 
-type PaymentHandler = (response: any, options: XhrUriConfig) => Promise<string>
+type PaymentHandler = (response: any, options: XhrUriConfig, body?: any) => Promise<string>
 
 export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): void => {
-  console.log('Overriding VHS XHR...')
+  console.log('[x402] Overriding VHS XHR...')
 
   const originalXhr = player.tech().vhs.xhr
   if (!originalXhr) {
@@ -15,6 +15,7 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): v
   }
 
   const customXhr = function (options: XhrUriConfig, callback: XhrCallback) {
+    console.log('[x402] original XHR called', { uri: options.uri })
     let modifiedOptions: XhrUriConfig
     if (options.uri) {
       const encodedUrl = encodeURIComponent(options.uri)
@@ -22,6 +23,7 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): v
         ...options,
         uri: `${config.streamServerUrl}/stream/remote?url=${encodedUrl}`,
       }
+      console.log('[x402] rewrote URI to stream proxy', { original: options.uri, proxied: modifiedOptions.uri })
     } else {
       modifiedOptions = options
     }
@@ -36,6 +38,14 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): v
         writable: true,
       })
 
+      // Track the proxied URL so the payment handler can refetch the 402 body if needed
+      if (modifiedOptions.uri) {
+        Object.defineProperty(response, '_proxiedUri', {
+          value: modifiedOptions.uri,
+          writable: true,
+        })
+      }
+
       // Some browsers/libraries use responseURL as well
       if (response.responseURL) {
         Object.defineProperty(response, 'responseURL', {
@@ -45,17 +55,21 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any): v
       }
 
       if (response.status === 402) {
-        console.log('402 Payment Required. Handling payment...')
+        console.log('[x402] 402 Payment Required. Handling payment...', { uri: options.uri })
 
-        paymentHandler(response, options)
+        paymentHandler(response, options, body)
           .then(paymentHeader => {
             modifiedOptions.headers = modifiedOptions.headers || {}
             modifiedOptions.headers['x-payment'] = paymentHeader
+            console.log('[x402] retrying with x-payment header', {
+              uri: modifiedOptions.uri,
+              hasHeader: Boolean(paymentHeader),
+            })
 
             originalXhr(modifiedOptions, callback)
           })
           .catch(err => {
-            console.error('Payment failed', err)
+            console.error('[x402] Payment failed', err)
             callback(error || err, response, body)
           })
 
