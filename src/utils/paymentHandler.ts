@@ -68,10 +68,10 @@ const buildTypedMessage = (publicParams: CorePublicParameters, claims: PaymentGu
   message: {
     user: claims.userAddress,
     recipient: claims.recipientAddress,
-    tabId: Number(claims.tabId),
-    amount: Number(claims.amount),
+    tabId: BigInt(claims.tabId),
+    amount: BigInt(claims.amount),
     asset: claims.assetAddress,
-    timestamp: Number(claims.timestamp),
+    timestamp: BigInt(claims.timestamp),
   },
 })
 
