@@ -16,7 +16,18 @@ const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
 
 function App() {
   const [playerReady, setPlayerReady] = useState<boolean>(false)
-  const { address, chainId, isConnecting, error, isConnected, connect, disconnect, signer, switchToTargetChain } = useWallet()
+  const {
+    address,
+    chainId,
+    isConnecting,
+    hasTriedEager,
+    error,
+    isConnected,
+    connect,
+    disconnect,
+    signer,
+    switchToTargetChain,
+  } = useWallet()
   const [balance, setBalance] = useState<string | null>(null)
   const [balanceLoading, setBalanceLoading] = useState(false)
   const [depositAmount, setDepositAmount] = useState('10')
@@ -263,6 +274,14 @@ function App() {
     }
   }, [isConnected, fetchCollateral])
 
+  useEffect(() => {
+    if (!isConnected) return
+    const id = setInterval(() => {
+      fetchCollateral()
+    }, 10000)
+    return () => clearInterval(id)
+  }, [isConnected, fetchCollateral])
+
   const ensureAllowance = useCallback(
     async (tokenAddr: string, required: bigint, decimals: number) => {
       if (!signer || !address || !coreParams) {
@@ -365,76 +384,107 @@ function App() {
   }
 
   const renderConnectScreen = () => (
-    <div className='grid md:grid-cols-2 gap-6 items-stretch relative z-10'>
-      <div className='bg-gradient-to-br from-indigo-500/20 via-purple-500/10 to-emerald-400/10 border border-white/10 rounded-2xl p-8 shadow-2xl h-full'>
-        <div className='inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 text-xs uppercase tracking-wide text-indigo-100 mb-4'>
-          <span className='text-lg'>⚡</span>
-          <span>Polygon-Amoy</span>
+    <div className='relative z-10 grid lg:grid-cols-[1.05fr_0.95fr] gap-10 items-center'>
+      <div className='space-y-6'>
+        <div className='inline-flex items-center gap-2 px-4 py-1 rounded-full bg-white/10 border border-white/15 text-xs uppercase tracking-[0.12em] text-indigo-100'>
+          <span className='h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse' />
+          Live on Polygon Amoy
         </div>
-        <h2 className='text-2xl md:text-3xl text-white font-semibold mb-3'>Connect wallet to start streaming</h2>
-        <p className='text-gray-200 mb-6 leading-relaxed'>
-          We’ll sign x402 payments from your wallet as you watch. You can choose to pay with using x402 or to pay with 4Mica credit integrated with x402 for a smoothflow! 
-        </p>
-        <div className='space-y-3 text-gray-200'>
-          <div className='flex items-start gap-3'>
-            <div className='w-2.5 h-2.5 rounded-full bg-emerald-400 mt-1.5' />
-            <div>
-              <div className='font-semibold'>Instant connect</div>
-              <div className='text-gray-400 text-sm'>MetaMask, WalletConnect, or any injected EVM wallet.</div>
+        <div className='space-y-3'>
+          <h2 className='text-3xl md:text-4xl text-white font-semibold leading-tight'>Stream instantly with a wallet tap</h2>
+          <p className='text-gray-200 text-lg leading-relaxed max-w-2xl'>
+            Connect your wallet and start playback without forms or friction. Settlement runs in the background while you stay focused on the stream.
+          </p>
+        </div>
+
+        <div className='grid sm:grid-cols-3 gap-3'>
+          <div className='rounded-2xl border border-white/10 bg-white/5 p-4 shadow-lg shadow-indigo-900/10'>
+            <div className='text-[11px] uppercase tracking-[0.14em] text-indigo-100 mb-1.5'>Network check</div>
+            <div className='text-white font-semibold flex items-center gap-2 text-sm'>
+              <span className='h-2 w-2 rounded-full bg-emerald-400 animate-pulse' />
+              Amoy pre-set
             </div>
+            <div className='text-xs text-gray-400 mt-2'>Auto-detects the target chain and prompts a switch if needed.</div>
           </div>
-          <div className='flex items-start gap-3'>
-            <div className='w-2.5 h-2.5 rounded-full bg-indigo-400 mt-1.5' />
-            <div>
-              <div className='font-semibold'>Secure signing</div>
-              <div className='text-gray-400 text-sm'>Typed-data signatures only; no private keys stored.</div>
-            </div>
+          <div className='rounded-2xl border border-white/10 bg-white/5 p-4 shadow-lg shadow-emerald-900/10'>
+            <div className='text-[11px] uppercase tracking-[0.14em] text-emerald-100 mb-1.5'>Privacy</div>
+            <div className='text-white font-semibold text-sm'>Sign only</div>
+            <div className='text-xs text-gray-400 mt-2'>Connection uses message signing; no spending approvals requested here.</div>
           </div>
-          <div className='flex items-start gap-3'>
-            <div className='w-2.5 h-2.5 rounded-full bg-purple-400 mt-1.5' />
-            <div>
-              <div className='font-semibold'>Instant Settlement with 4Mica</div>
-              <div className='text-gray-400 text-sm'>4Mica credit payment handles pay for each segment instantly and at zero-cost</div>
+          <div className='rounded-2xl border border-white/10 bg-white/5 p-4 shadow-lg shadow-blue-900/10'>
+            <div className='text-[11px] uppercase tracking-[0.14em] text-blue-100 mb-1.5'>Focus</div>
+            <div className='text-white font-semibold text-sm'>Playback first</div>
+            <div className='text-xs text-gray-400 mt-2'>Wallet stays connected while x402 handles per-segment payments.</div>
+          </div>
+        </div>
+
+        <div className='flex items-start gap-3 text-sm text-gray-200 max-w-2xl'>
+          <div className='h-10 w-10 rounded-xl bg-white/10 border border-white/10 flex items-center justify-center text-lg'>✓</div>
+          <div>
+            <div className='font-semibold text-white'>Fast start, clear safety</div>
+            <div className='text-gray-400'>
+              Single primary action to connect, visible chain badge, and reassurance that keys stay local.
             </div>
           </div>
         </div>
       </div>
 
-      <div className='bg-slate-900/70 border border-white/10 rounded-2xl p-8 shadow-2xl backdrop-blur-md h-full flex flex-col justify-between'>
-        <div className='space-y-4'>
-          <div className='flex items-center justify-between'>
-            <div className='text-gray-100 font-semibold text-lg'>Wallet connection</div>
-            <div className='px-3 py-1 rounded-full text-xs bg-indigo-500/20 text-indigo-100 border border-indigo-500/40'>
-              Required to continue
-            </div>
-          </div>
-          <div className='rounded-xl border border-white/5 bg-white/5 px-4 py-3 flex items-center justify-between'>
+      <div className='relative'>
+        <div className='absolute -inset-6 bg-gradient-to-br from-indigo-600/25 via-blue-500/15 to-emerald-500/20 blur-3xl opacity-70 rounded-[32px]' />
+        <div className='relative bg-slate-950/70 border border-white/10 rounded-[28px] p-7 shadow-[0_25px_70px_rgba(0,0,0,0.45)] backdrop-blur'>
+          <div className='flex items-center justify-between mb-6'>
             <div>
-              <div className='text-gray-200 font-medium'>Network</div>
-              <div className='text-gray-400 text-sm'>Polygon-Amoy (80002)</div>
+              <div className='text-gray-100 text-xl font-semibold'>Connect your wallet</div>
+              <div className='text-gray-400 text-sm'>Choose a provider and approve the prompt</div>
             </div>
-            <div className='px-3 py-1 rounded-full bg-emerald-500/15 text-emerald-200 text-xs'>Ready</div>
+            <div className='px-3 py-1 rounded-full text-xs bg-white/10 border border-white/20 text-gray-100'>Step 1</div>
           </div>
-          <div className='rounded-xl border border-white/5 bg-white/5 px-4 py-3 flex items-center justify-between'>
-            <div>
-              <div className='text-gray-200 font-medium'>Wallet status</div>
-              <div className='text-gray-400 text-sm'>{isConnecting ? 'Awaiting approval…' : 'Not connected'}</div>
-            </div>
-            <div className='px-3 py-1 rounded-full bg-yellow-500/15 text-yellow-200 text-xs'>Action needed</div>
-          </div>
-        </div>
 
-        <div className='space-y-3 mt-6'>
-          <button
-            onClick={handleConnect}
-            className='w-full px-5 py-3 rounded-xl bg-indigo-500 text-white hover:bg-indigo-400 transition disabled:opacity-60 shadow-lg shadow-indigo-500/30'
-            disabled={isConnecting}
-          >
-            {isConnecting ? 'Connecting...' : 'Connect wallet'}
-          </button>
-          {error && <div className='text-sm text-red-400 text-center'>{error}</div>}
-          <div className='text-xs text-gray-400 text-center'>
-            Please approve the connection in your wallet. We never request spend permissions here.
+          <div className='rounded-2xl border border-white/10 bg-gradient-to-br from-slate-900 via-slate-900/70 to-indigo-900/40 p-5 space-y-4'>
+            <div className='flex items-center justify-between'>
+              <div className='text-sm text-gray-300'>Connection state</div>
+              <span className='px-3 py-1 rounded-full text-xs border border-white/10 text-gray-100 bg-white/5'>
+                {isConnecting ? 'Awaiting approval…' : 'Ready to connect'}
+              </span>
+            </div>
+
+            <div className='rounded-xl border border-white/10 bg-black/40 px-4 py-3 flex items-center justify-between'>
+              <div>
+                <div className='text-[11px] uppercase tracking-[0.14em] text-gray-400'>Chain</div>
+                <div className='text-gray-100 font-semibold flex items-center gap-2'>
+                  <span className='h-2 w-2 rounded-full bg-emerald-400 animate-pulse' />
+                  Polygon Amoy • 80002
+                </div>
+              </div>
+              <div className='text-[11px] px-3 py-1 rounded-full bg-emerald-500/15 text-emerald-100 border border-emerald-500/30'>
+                Synced
+              </div>
+            </div>
+
+            <div className='grid sm:grid-cols-3 gap-2 text-xs text-gray-300'>
+              <div className='rounded-lg border border-white/10 bg-white/5 p-3'>
+                <div className='font-semibold text-white mb-1'>Pick wallet</div>
+                <div className='text-gray-400'>Metamask, WalletConnect, or any injected EVM.</div>
+              </div>
+              <div className='rounded-lg border border-white/10 bg-white/5 p-3'>
+                <div className='font-semibold text-white mb-1'>Approve</div>
+                <div className='text-gray-400'>Review and sign the connect request.</div>
+              </div>
+              <div className='rounded-lg border border-white/10 bg-white/5 p-3'>
+                <div className='font-semibold text-white mb-1'>Start streaming</div>
+                <div className='text-gray-400'>Playback continues while on-chain payments run.</div>
+              </div>
+            </div>
+
+            <button
+              onClick={handleConnect}
+              className='w-full px-5 py-3 rounded-2xl bg-gradient-to-r from-indigo-500 via-blue-500 to-emerald-400 text-white text-base font-semibold shadow-lg shadow-indigo-500/30 hover:shadow-emerald-400/30 transition disabled:opacity-60'
+              disabled={isConnecting}
+            >
+              {isConnecting ? 'Connecting...' : 'Connect wallet'}
+            </button>
+            {error && <div className='text-sm text-red-400 text-center'>{error}</div>}
+            <div className='text-xs text-gray-400 text-center'>No approvals to spend; this step is for access only.</div>
           </div>
         </div>
       </div>
@@ -453,17 +503,6 @@ function App() {
         <div className='bg-gray-800/90 border border-white/10 rounded-2xl p-5 shadow-xl flex flex-col gap-4'>
           <div className='rounded-2xl bg-gradient-to-br from-emerald-500/25 via-teal-500/15 to-indigo-600/15 border border-emerald-400/40 p-4 shadow-lg'>
             <div className='flex items-start justify-between gap-3'>
-              <div>
-                <div className='text-xs uppercase tracking-[0.12em] text-emerald-100'>4Mica Collateral</div>
-                <div className='text-sm text-emerald-50/80 mt-1'>Deposited to 4Mica core</div>
-              </div>
-              <button
-                onClick={fetchCollateral}
-                disabled={collateralLoading}
-                className='px-3 py-1 rounded-full text-xs font-semibold bg-white/10 text-white border border-white/20 hover:bg-white/20 transition disabled:opacity-60'
-              >
-                {collateralLoading ? 'Refreshing…' : 'Refresh'}
-              </button>
             </div>
             <div className='mt-4 flex items-end justify-between'>
               <div className='text-3xl font-semibold text-white'>
@@ -479,6 +518,7 @@ function App() {
                 {collateralLoading ? 'Syncing' : collateral.length ? 'Live' : 'No collateral'}
               </div>
             </div>
+            <div className='text-xs text-emerald-50/80 mt-1'>6% APY</div>
             {primaryCollateral && Number(primaryCollateral.withdrawalRequested) > 0 && (
               <div className='mt-2 text-xs text-amber-100 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2'>
                 Withdrawal pending: {Number(primaryCollateral.withdrawalRequested).toFixed(4)} {primaryCollateral.symbol}
@@ -704,14 +744,33 @@ function App() {
     )
   }
 
+  const isBootstrapping = !hasTriedEager
+
+  if (isBootstrapping) {
+    return (
+      <div className='relative min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center p-4 overflow-hidden'>
+        <div className='absolute -top-40 -right-24 h-80 w-80 bg-indigo-500/30 blur-3xl rounded-full pointer-events-none' />
+        <div className='absolute -bottom-32 -left-10 h-80 w-80 bg-emerald-500/20 blur-3xl rounded-full pointer-events-none' />
+        <div className='w-full max-w-3xl mx-auto text-center space-y-4'>
+          <div className='inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 border border-white/15 text-xs uppercase tracking-[0.12em] text-indigo-100'>
+            <span className='h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse' />
+            Restoring wallet session
+          </div>
+          <div className='text-2xl md:text-3xl text-white font-semibold'>Checking for an existing connection…</div>
+          <div className='text-gray-400 text-sm'>If you previously approved this site, your wallet will reconnect automatically.</div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className='relative min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center p-4 overflow-hidden'>
       <div className='absolute -top-40 -right-24 h-80 w-80 bg-indigo-500/30 blur-3xl rounded-full pointer-events-none' />
       <div className='absolute -bottom-32 -left-10 h-80 w-80 bg-emerald-500/20 blur-3xl rounded-full pointer-events-none' />
       <div className='w-full max-w-6xl'>
         <div className='mb-4'>
-          <h1 className='text-2xl font-light text-gray-100 tracking-wide'>4Mica x Polygon Demo</h1>
-          <p className='text-gray-400 text-sm mt-1'>Connect a wallet to sign x402 payments on Polygon-Amoy.</p>
+          <h1 className='text-2xl font-light text-gray-100 tracking-wide'>Polygon streaming access</h1>
+          <p className='text-gray-400 text-sm mt-1'>Use your wallet to enter the live demo; signatures stay automatic while you watch.</p>
         </div>
 
         {isConnected ? renderPlayerScreen() : renderConnectScreen()}

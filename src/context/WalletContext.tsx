@@ -12,6 +12,7 @@ type WalletContextValue = {
   chainId: number | null
   signer: JsonRpcSigner | null
   isConnecting: boolean
+  hasTriedEager: boolean
   error: string | null
   isConnected: boolean
   connect: () => Promise<void>
@@ -36,13 +37,32 @@ const initialState = {
   chainId: null,
   signer: null,
   isConnecting: false,
+  hasTriedEager: false,
   error: null as string | null,
 }
 
 export const WalletProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [state, setState] = useState(initialState)
 
-  const reset = useCallback(() => setState(initialState), [])
+  const reset = useCallback(() => setState({ ...initialState, hasTriedEager: true }), [])
+
+  const setConnectedState = useCallback(
+    async (provider: BrowserProvider, signer?: JsonRpcSigner, customError?: string | null) => {
+      const signerToUse = signer ?? (await provider.getSigner())
+      const address = await signerToUse.getAddress()
+      const network = await provider.getNetwork()
+      setState({
+        address,
+        chainId: Number(network.chainId),
+        signer: signerToUse,
+        isConnecting: false,
+        hasTriedEager: true,
+        error: customError ?? null,
+      })
+      return { address, chainId: Number(network.chainId) }
+    },
+    []
+  )
 
   const connect = useCallback(async () => {
     setState(prev => ({ ...prev, isConnecting: true, error: null }))
@@ -69,41 +89,22 @@ export const WalletProvider: React.FC<React.PropsWithChildren> = ({ children }) 
             method: 'wallet_switchEthereumChain',
             params: [{ chainId: TARGET_CHAIN_HEX }],
           })
-          const refreshed = await provider.getNetwork()
-          setState({
-            address,
-            chainId: Number(refreshed.chainId),
-            signer,
-            isConnecting: false,
-            error: null,
-          })
+          await setConnectedState(provider, signer)
           return
         } catch (switchErr: any) {
           console.warn('Chain switch declined or failed', switchErr)
-          setState({
-            address,
-            chainId: Number(network.chainId),
-            signer,
-            isConnecting: false,
-            error: 'Please switch to Polygon Amoy (80002) to continue.',
-          })
+          await setConnectedState(provider, signer, 'Please switch to Polygon Amoy (80002) to continue.')
           return
         }
       }
 
-      setState({
-        address,
-        chainId: Number(network.chainId),
-        signer,
-        isConnecting: false,
-        error: null,
-      })
+      await setConnectedState(provider, signer)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to connect wallet'
-      setState(prev => ({ ...prev, isConnecting: false, error: message }))
+      setState(prev => ({ ...prev, isConnecting: false, hasTriedEager: true, error: message }))
       throw err
     }
-  }, [])
+  }, [setConnectedState])
 
   const switchToTargetChain = useCallback(async (): Promise<boolean> => {
     const eth = window.ethereum
@@ -118,7 +119,7 @@ export const WalletProvider: React.FC<React.PropsWithChildren> = ({ children }) 
       })
       const provider = new BrowserProvider(eth)
       const network = await provider.getNetwork()
-      setState(prev => ({ ...prev, chainId: Number(network.chainId), error: null }))
+      setState(prev => ({ ...prev, chainId: Number(network.chainId), hasTriedEager: true, error: null }))
       return true
     } catch (err: any) {
       // Attempt to add the chain if it's missing
@@ -130,17 +131,59 @@ export const WalletProvider: React.FC<React.PropsWithChildren> = ({ children }) 
           })
           const provider = new BrowserProvider(eth)
           const network = await provider.getNetwork()
-          setState(prev => ({ ...prev, chainId: Number(network.chainId), error: null }))
+          setState(prev => ({ ...prev, chainId: Number(network.chainId), hasTriedEager: true, error: null }))
           return true
         } catch (addErr) {
           const message = addErr instanceof Error ? addErr.message : 'Failed to add Polygon Amoy'
-          setState(prev => ({ ...prev, error: message }))
+          setState(prev => ({ ...prev, hasTriedEager: true, error: message }))
           return false
         }
       }
       const message = err instanceof Error ? err.message : 'Failed to switch chain'
-      setState(prev => ({ ...prev, error: message }))
+      setState(prev => ({ ...prev, hasTriedEager: true, error: message }))
       return false
+    }
+  }, [])
+
+  useEffect(() => {
+    const eth = window.ethereum
+    if (!eth) return
+
+    let cancelled = false
+    const attemptEagerConnect = async () => {
+      setState(prev => ({ ...prev, isConnecting: true }))
+      try {
+        const provider = new BrowserProvider(eth)
+        const accounts: string[] = await provider.send('eth_accounts', [])
+        if (!accounts || accounts.length === 0) {
+          if (!cancelled) {
+            setState(prev => ({ ...prev, isConnecting: false, hasTriedEager: true }))
+          }
+          return
+        }
+        const signer = await provider.getSigner()
+        const address = await signer.getAddress()
+        const network = await provider.getNetwork()
+        if (cancelled) return
+        const chainId = Number(network.chainId)
+        const maybeError = chainId === TARGET_CHAIN_ID ? null : 'Switch to Polygon Amoy (80002) to continue.'
+        setState({
+          address,
+          chainId,
+          signer,
+          isConnecting: false,
+          hasTriedEager: true,
+          error: maybeError,
+        })
+      } catch (err) {
+        if (!cancelled) {
+          setState(prev => ({ ...prev, isConnecting: false, hasTriedEager: true }))
+        }
+      }
+    }
+    attemptEagerConnect()
+    return () => {
+      cancelled = true
     }
   }, [])
 
