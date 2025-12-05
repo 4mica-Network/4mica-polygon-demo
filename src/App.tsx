@@ -4,7 +4,7 @@ import { Contract, formatEther, formatUnits, isAddress, parseUnits } from 'ether
 import VideoPlayer from './components/VideoPlayer'
 import { config } from './config/env'
 import { TARGET_CHAIN_ID, useWallet } from './context/WalletContext'
-import { createPaymentHandler } from './utils/paymentHandler'
+import { createPaymentHandler, type PaymentScheme, type SchemeResolvedInfo } from './utils/paymentHandler'
 import core4micaAbi from 'sdk-4mica/dist/abi/core4mica.json'
 import * as fourMica from 'sdk-4mica'
 
@@ -35,8 +35,9 @@ function App() {
   const [tokenAddress, setTokenAddress] = useState('')
   const [tokenDecimals, setTokenDecimals] = useState('18')
   const [depositLoading, setDepositLoading] = useState(false)
+  const [paymentScheme, setPaymentScheme] = useState<PaymentScheme>('4mica-credit')
   type LogTone = 'info' | 'warn' | 'success' | 'error'
-  type LogEntry = { text: string; tone: LogTone; at: string }
+  type LogEntry = { text: string; tone: LogTone; at: string; txHash?: string }
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [coreParams, setCoreParams] = useState<fourMica.CorePublicParameters | null>(null)
   const [paramsLoading, setParamsLoading] = useState(false)
@@ -65,24 +66,39 @@ function App() {
     })
   }
 
-  const appendLog = useCallback(
-    (entry: string, tone: LogTone = 'info') => {
-      setLogs(prev => {
-        const next = [{ text: entry, tone, at: new Date().toLocaleTimeString() }, ...prev]
-        return next.slice(0, 100)
-      })
+  const appendLog = useCallback((entry: string, tone: LogTone = 'info', txHash?: string) => {
+    setLogs(prev => {
+      const next = [{ text: entry, tone, at: new Date().toLocaleTimeString(), txHash }, ...prev]
+      return next.slice(0, 100)
+    })
+  }, [])
+
+  const getPreferredScheme = useCallback(() => paymentScheme, [paymentScheme])
+
+  const handleSchemeResolved = useCallback(
+    ({ preferred, chosen, offered, usedFallback }: SchemeResolvedInfo) => {
+      if (usedFallback && chosen.toLowerCase() !== preferred.toLowerCase()) {
+        const offeredList = offered.filter(Boolean).join(', ')
+        appendLog(
+          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${offeredList ? ` (offered: ${offeredList})` : ''}.`,
+          'warn'
+        )
+      }
     },
-    []
+    [appendLog]
   )
 
   const getSigner = useCallback(async () => signer, [signer])
-  const paymentHandler = useMemo(() => createPaymentHandler(getSigner), [getSigner])
+  const paymentHandler = useMemo(
+    () => createPaymentHandler(getSigner, getPreferredScheme, handleSchemeResolved),
+    [getSigner, getPreferredScheme, handleSchemeResolved]
+  )
   const paymentEvents = useMemo(
     () => ({
       onPaymentRequested: (chunkId: string, amount?: string) =>
         appendLog(`#${chunkId} ${amount ? `${amount}` : ''}`, 'warn'),
-      onPaymentSettled: (chunkId: string, amount?: string) =>
-        appendLog(`#${chunkId} ${amount ? `${amount}` : ''}`, 'success'),
+      onPaymentSettled: (chunkId: string, amount?: string, txHash?: string) =>
+        appendLog(`#${chunkId} ${amount ? `${amount}` : 'Settled'}`, 'success', txHash),
       onPaymentFailed: (chunkId: string, err: unknown, amount?: string) =>
         appendLog(
           `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${err instanceof Error ? err.message : String(err)}`,
@@ -98,6 +114,14 @@ function App() {
     const suffix = addr.slice(-4)
     return `${prefix}...${suffix}`
   }
+
+  const formatTxHash = (hash?: string) => {
+    if (!hash) return ''
+    if (hash.length <= 18) return hash
+    return `${hash.slice(0, 10)}...${hash.slice(-6)}`
+  }
+
+  const explorerUrlForTx = (hash?: string) => (hash ? `https://amoy.polygonscan.com/tx/${hash}` : null)
 
   const copyAddress = useCallback(async () => {
     if (!address) {
@@ -314,6 +338,10 @@ function App() {
   const handleDeposit = async () => {
     if (!signer || !address) {
       appendLog('Connect wallet before depositing.')
+      return
+    }
+    if (paymentScheme !== '4mica-credit') {
+      appendLog('Deposits are only needed in 4mica credit mode. Switch payment rail to deposit.')
       return
     }
     if (!coreParams) {
@@ -581,89 +609,145 @@ function App() {
             )}
           </div>
 
-          <div className='space-y-3'>
-            <div className='text-gray-200 font-semibold flex items-center justify-between'>
-              <span>Deposit to 4mica</span>
-              <span className='text-xs text-gray-400'>Default: USDC</span>
-            </div>
-            <div className='grid grid-cols-2 gap-2 text-sm'>
-              <button
-                onClick={() => setDepositMode('default')}
-                className={`rounded-lg px-3 py-2 border ${
-                  depositMode === 'default'
-                    ? 'border-emerald-400 bg-emerald-500/20 text-white'
-                    : 'border-white/10 text-gray-300'
-                }`}
-              >
-                USDC (default)
-              </button>
-              <button
-                onClick={() => setDepositMode('custom')}
-                className={`rounded-lg px-3 py-2 border ${
-                  depositMode === 'custom'
-                    ? 'border-indigo-400 bg-indigo-500/20 text-white'
-                    : 'border-white/10 text-gray-300'
-                }`}
-              >
-                Custom token
-              </button>
+          <div className='space-y-4'>
+            <div className='space-y-3'>
+              <div className='text-gray-200 font-semibold flex items-center justify-between'>
+                <span>Payment rail</span>
+                {paymentScheme === '4mica-credit' ? (
+                  <span className='text-xs text-emerald-300'>Recommended</span>
+                ) : (
+                  <span className='text-xs text-indigo-200'>On-chain</span>
+                )}
+              </div>
+              <div className='grid grid-cols-2 gap-2 text-sm'>
+                <button
+                  onClick={() => setPaymentScheme('4mica-credit')}
+                  className={`rounded-lg px-3 py-2 border ${
+                    paymentScheme === '4mica-credit'
+                      ? 'border-emerald-400 bg-emerald-500/20 text-white'
+                      : 'border-white/10 text-gray-300'
+                  }`}
+                >
+                  4mica credit
+                </button>
+                <button
+                  onClick={() => setPaymentScheme('x402')}
+                  className={`rounded-lg px-3 py-2 border ${
+                    paymentScheme === 'x402'
+                      ? 'border-indigo-400 bg-indigo-500/20 text-white'
+                      : 'border-white/10 text-gray-300'
+                  }`}
+                >
+                  x402
+                </button>
+              </div>
+              {paymentScheme === '4mica-credit' && (
+                <div className='text-xs text-gray-400'>
+                  Lower gas footprint; uses your 4mica credit balance to keep playback uninterrupted.
+                </div>
+              )}
             </div>
 
-            {depositMode === 'default' ? (
-              <div className='text-xs text-gray-300'>
-                Using USDC (6 decimals)
-                {defaultTokenAddress && <div className='mt-1 break-all text-gray-400'>Address: {defaultTokenAddress}</div>}
-              </div>
-            ) : (
-              <>
-                <div className='text-xs text-gray-400'>Token address</div>
-                <input
-                  value={tokenAddress}
-                  onChange={e => setTokenAddress(e.target.value)}
-                  placeholder='Token address (0x...)'
-                  className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
-                />
-                <div className='text-xs text-gray-400'>Token decimals (e.g., 6 or 18)</div>
+            {paymentScheme === '4mica-credit' ? (
+              <div className='space-y-3'>
+                <div className='text-gray-200 font-semibold flex items-center justify-between'>
+                  <span>Deposit to 4mica</span>
+                  <span className='text-xs text-gray-400'>Default: USDC</span>
+                </div>
+                <div className='grid grid-cols-2 gap-2 text-sm'>
+                  <button
+                    onClick={() => setDepositMode('default')}
+                    className={`rounded-lg px-3 py-2 border ${
+                      depositMode === 'default'
+                        ? 'border-emerald-400 bg-emerald-500/20 text-white'
+                        : 'border-white/10 text-gray-300'
+                    }`}
+                  >
+                    USDC (default)
+                  </button>
+                  <button
+                    onClick={() => setDepositMode('custom')}
+                    className={`rounded-lg px-3 py-2 border ${
+                      depositMode === 'custom'
+                        ? 'border-indigo-400 bg-indigo-500/20 text-white'
+                        : 'border-white/10 text-gray-300'
+                    }`}
+                  >
+                    Custom token
+                  </button>
+                </div>
+
+                {depositMode === 'default' ? (
+                  <div className='text-xs text-gray-300'>
+                    Using USDC (6 decimals)
+                    {defaultTokenAddress && <div className='mt-1 break-all text-gray-400'>Address: {defaultTokenAddress}</div>}
+                  </div>
+                ) : (
+                  <>
+                    <div className='text-xs text-gray-400'>Token address</div>
+                    <input
+                      value={tokenAddress}
+                      onChange={e => setTokenAddress(e.target.value)}
+                      placeholder='Token address (0x...)'
+                      className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
+                    />
+                    <div className='text-xs text-gray-400'>Token decimals (e.g., 6 or 18)</div>
+                    <input
+                      type='number'
+                      min='0'
+                      max='36'
+                      value={tokenDecimals}
+                      onChange={e => setTokenDecimals(e.target.value)}
+                      placeholder='Token decimals'
+                      className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
+                    />
+                  </>
+                )}
+
+                <div className='text-xs text-gray-400'>Deposit amount</div>
                 <input
                   type='number'
                   min='0'
-                  max='36'
-                  value={tokenDecimals}
-                  onChange={e => setTokenDecimals(e.target.value)}
-                  placeholder='Token decimals'
+                  step='0.01'
+                  value={depositAmount}
+                  onChange={e => setDepositAmount(e.target.value)}
+                  placeholder='Amount to deposit'
                   className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
                 />
-              </>
-            )}
-
-            <div className='text-xs text-gray-400'>Deposit amount</div>
-            <input
-              type='number'
-              min='0'
-              step='0.01'
-              value={depositAmount}
-              onChange={e => setDepositAmount(e.target.value)}
-              placeholder='Amount to deposit'
-              className='w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400'
-            />
-            <button
-              onClick={handleDeposit}
-              disabled={depositLoading || onWrongChain || paramsLoading}
-              className='w-full rounded-lg bg-indigo-500 text-white py-2.5 font-semibold hover:bg-indigo-400 transition disabled:opacity-60'
-            >
-              {depositLoading ? 'Depositing...' : 'Deposit'}
-            </button>
-            {paramsLoading && <div className='text-xs text-gray-400'>Loading 4mica contract params…</div>}
-            <div className='text-xs text-gray-400'>
-              Deposits call the 4mica core contract on Polygon Amoy using your connected wallet.
-            </div>
-            {onWrongChain && (
-              <button
-                onClick={switchToTargetChain}
-                className='w-full rounded-lg bg-yellow-400 text-gray-900 py-2 font-semibold hover:bg-yellow-300 transition'
-              >
-                Switch to Polygon Amoy
-              </button>
+                <button
+                  onClick={handleDeposit}
+                  disabled={depositLoading || onWrongChain || paramsLoading}
+                  className='w-full rounded-lg bg-indigo-500 text-white py-2.5 font-semibold hover:bg-indigo-400 transition disabled:opacity-60'
+                >
+                  {depositLoading ? 'Depositing...' : 'Deposit'}
+                </button>
+                {paramsLoading && <div className='text-xs text-gray-400'>Loading 4mica contract params…</div>}
+                <div className='text-xs text-gray-400'>
+                  Deposits call the 4mica core contract on Polygon Amoy using your connected wallet.
+                </div>
+                {onWrongChain && (
+                  <button
+                    onClick={switchToTargetChain}
+                    className='w-full rounded-lg bg-yellow-400 text-gray-900 py-2 font-semibold hover:bg-yellow-300 transition'
+                  >
+                    Switch to Polygon Amoy
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className='rounded-xl bg-white/5 border border-white/10 p-4 space-y-2'>
+                <div className='text-gray-200 font-semibold'>x402 mode</div>
+                {onWrongChain ? (
+                  <button
+                    onClick={switchToTargetChain}
+                    className='w-full rounded-lg bg-yellow-400 text-gray-900 py-2 font-semibold hover:bg-yellow-300 transition'
+                  >
+                    Switch to Polygon Amoy
+                  </button>
+                ) : (
+                  <div className='text-xs text-emerald-200 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-2'>Polygon Amoy ready.</div>
+                )}
+              </div>
             )}
           </div>
 
@@ -732,7 +816,28 @@ function App() {
                       </span>
                       <span className='font-semibold'>{meta.label}</span>
                     </div>
-                    <div className='text-sm leading-relaxed text-white/90 break-words'>{log.text}</div>
+                    <div className='text-sm leading-relaxed text-white/90 break-words flex flex-wrap items-center gap-2'>
+                      <span>{log.text}</span>
+                    </div>
+                    {log.txHash && (
+                      <div className='flex flex-wrap items-center gap-2 text-xs text-indigo-100'>
+                        <span className='px-2 py-1 rounded bg-indigo-500/15 border border-indigo-400/30 text-[11px] uppercase tracking-[0.12em]'>
+                          Tx hash
+                        </span>
+                        <span className='font-mono break-all'>{log.txHash}</span>
+                        {explorerUrlForTx(log.txHash) && (
+                          <a
+                            href={explorerUrlForTx(log.txHash) ?? undefined}
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            className='inline-flex items-center gap-1 text-indigo-200 hover:text-indigo-50 underline decoration-dotted decoration-1'
+                          >
+                            <span className='text-[11px] uppercase tracking-[0.14em]'>View on explorer</span>
+                            <span className='font-mono text-[11px]'>{formatTxHash(log.txHash)}</span>
+                          </a>
+                        )}
+                      </div>
+                    )}
                     <div className='text-xs opacity-80 text-right'>{log.at}</div>
                   </div>
                 )

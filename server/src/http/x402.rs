@@ -66,9 +66,13 @@ pub async fn handle_x402_paywall(
         }
     };
 
-    if let Err(e) =
-        server::x402::settle_payment(&payment_header, &payment_requirements, &state.facilitator)
-            .await
+    if let Err(e) = server::x402::settle_payment(
+        &payment_header,
+        &payment_requirements,
+        &state.facilitator,
+        &state.config.x402,
+    )
+    .await
     {
         error!("Payment settlement failed: {}", e);
         return Err((

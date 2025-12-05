@@ -18,6 +18,7 @@ cp .env.default .env
 
 - `X402_ENABLED` - Enable x402 payment flow
 - `X402_PAY_TO` - Wallet address to receive payments
+- `X402_RPC_URL` - JSON-RPC endpoint used to verify on-chain x402 payments
 
 **Client:**
 

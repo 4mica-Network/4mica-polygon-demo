@@ -1,6 +1,6 @@
 import * as fourMica from 'sdk-4mica'
 import { config } from '../config/env'
-import { Signer, Wallet, AbiCoder, getBytes, JsonRpcProvider, formatUnits } from 'ethers'
+import { Signer, Wallet, AbiCoder, getBytes, JsonRpcProvider, formatUnits, Contract, ZeroAddress, isAddress } from 'ethers'
 
 type XhrOptions = {
   uri?: string
@@ -19,7 +19,17 @@ type PaymentRequiredResponse = {
   error?: string | null
 }
 
-const { PaymentRequirements, RpcProxy, X402Flow, CorePublicParameters, SigningScheme, PaymentGuaranteeRequestClaims } = fourMica
+export type PaymentScheme = '4mica-credit' | 'x402'
+type PreferredSchemeResolver = () => PaymentScheme
+export type SchemeResolvedInfo = {
+  preferred: PaymentScheme
+  chosen: string
+  offered: string[]
+  usedFallback: boolean
+}
+
+const { PaymentRequirements, RpcProxy, X402Flow, CorePublicParameters, SigningScheme, PaymentGuaranteeRequestClaims, X402PaymentEnvelope } =
+  fourMica
 
 type SignerResolver = () => Promise<Signer | null>
 
@@ -42,6 +52,39 @@ const ensureParams = async (): Promise<CorePublicParameters> => {
   params = await rpcProxy.getPublicParams()
   return params
 }
+
+const parseAmountRequired = (value: unknown): bigint => {
+  try {
+    return BigInt(value as any)
+  } catch {
+    return 0n
+  }
+}
+
+const resolveAssetMeta = async (
+  provider: any,
+  assetAddr: string
+): Promise<{ symbol: string; decimals: number } | null> => {
+  if (!provider) return null
+  if (!assetAddr || assetAddr.toLowerCase() === ZeroAddress.toLowerCase()) {
+    return { symbol: 'POL', decimals: 18 }
+  }
+  if (!isAddress(assetAddr)) return null
+  try {
+    const erc20 = new Contract(
+      assetAddr,
+      ['function symbol() view returns (string)', 'function decimals() view returns (uint8)'],
+      provider
+    )
+    const [symbol, decimals] = await Promise.all([erc20.symbol(), erc20.decimals()])
+    return { symbol: String(symbol), decimals: Number(decimals) || 18 }
+  } catch {
+    return null
+  }
+}
+
+const formatAmountDisplay = (amount: bigint, decimals: number, symbol: string) =>
+  `${formatUnits(amount, decimals)} ${symbol}`
 
 const buildTypedMessage = (publicParams: CorePublicParameters, claims: PaymentGuaranteeRequestClaims) => ({
   types: {
@@ -154,19 +197,67 @@ const buildFlow = async (getWalletSigner: SignerResolver) => {
 
   const flow = new X402Flow(flowSigner as any, boundFetch as any)
   console.log('[x402] initialized flow for', address, 'rpc=', config.rpcUrl, 'source=', source)
-  return { flow, userAddress: address }
+  return { flow, userAddress: address, signer, publicParams }
 }
 
-const parseRequirements = (raw: string): PaymentRequirements => {
+const encodeBase64Payload = (payload: unknown): string => {
+  const json = JSON.stringify(payload)
+  if (typeof btoa === 'function') return btoa(json)
+  const buf = (globalThis as any).Buffer
+  if (buf?.from) return buf.from(json, 'utf-8').toString('base64')
+  throw new Error('No base64 encoder available')
+}
+
+const parseRequirements = (
+  raw: string,
+  preferredScheme: PaymentScheme,
+  onSchemeResolved?: (info: SchemeResolvedInfo) => void
+): PaymentRequirements => {
   const parsed: PaymentRequiredResponse = JSON.parse(raw)
   if (!Array.isArray(parsed.accepts) || parsed.accepts.length === 0) {
     throw new Error('paymentRequirements missing from 402 response')
   }
-  const preferred =
-    parsed.accepts.find(
-      r => typeof r === 'object' && r !== null && 'scheme' in (r as any) && String((r as any).scheme).toLowerCase().includes('4mica')
-    ) ?? parsed.accepts[0]
-  return PaymentRequirements.fromRaw(preferred as Record<string, unknown>)
+
+  const normalizeScheme = (candidate: unknown) => {
+    if (typeof candidate === 'object' && candidate !== null && 'scheme' in (candidate as any)) {
+      const scheme = (candidate as any).scheme
+      if (typeof scheme === 'string') return scheme.toLowerCase()
+    }
+    return ''
+  }
+
+  const offered = parsed.accepts.map(normalizeScheme)
+  const normalizedPreferred = preferredScheme.toLowerCase()
+  const directAliases = ['x402', 'exact']
+  const matchesPreferred = (candidate: unknown) => {
+    const scheme = normalizeScheme(candidate)
+    if (!scheme) return false
+    if (scheme === normalizedPreferred) return true
+    if (normalizedPreferred === 'x402' && directAliases.includes(scheme)) return true
+    return false
+  }
+  const directChoice =
+    normalizedPreferred === 'x402'
+      ? parsed.accepts.find(r => directAliases.includes(normalizeScheme(r)))
+      : undefined
+  const exact = parsed.accepts.find(matchesPreferred)
+  const fallback4mica =
+    normalizedPreferred === 'x402' ? undefined : parsed.accepts.find(r => normalizeScheme(r).includes('4mica'))
+  const choice = (directChoice ?? exact ?? fallback4mica ?? parsed.accepts[0]) as Record<string, unknown>
+  const chosen = normalizeScheme(choice) || String((choice as any).scheme ?? '')
+
+  if (normalizedPreferred === 'x402' && !directAliases.includes(chosen)) {
+    throw new Error('Direct x402 settlement not offered by server')
+  }
+
+  onSchemeResolved?.({
+    preferred: preferredScheme,
+    chosen,
+    offered,
+    usedFallback: !matchesPreferred(choice),
+  })
+
+  return PaymentRequirements.fromRaw(choice)
 }
 
 const coerceBodyText = (response: Response, body?: any): string | null => {
@@ -216,9 +307,15 @@ const fetchBodyText = async (url: string): Promise<string | null> => {
   })
 }
 
-const getPaymentRequirements = async (response: Response, options: XhrOptions, body?: any) => {
+const getPaymentRequirements = async (
+  response: Response,
+  options: XhrOptions,
+  body: any,
+  preferredScheme: PaymentScheme,
+  onSchemeResolved?: (info: SchemeResolvedInfo) => void
+) => {
   const inline = coerceBodyText(response, body)
-  if (inline) return parseRequirements(inline)
+  if (inline) return parseRequirements(inline, preferredScheme, onSchemeResolved)
 
   const url =
     (response as any)._proxiedUri ??
@@ -232,7 +329,7 @@ const getPaymentRequirements = async (response: Response, options: XhrOptions, b
   if (!fetched) {
     throw new Error('No payment details found in 402 response')
   }
-  return parseRequirements(fetched)
+  return parseRequirements(fetched, preferredScheme, onSchemeResolved)
 }
 
 const withFixedTabEndpoint = (requirements: PaymentRequirements): PaymentRequirements => {
@@ -264,38 +361,137 @@ const withFixedTabEndpoint = (requirements: PaymentRequirements): PaymentRequire
   return requirements
 }
 
+const settleDirectPayment = async (
+  signer: Signer,
+  amountRaw: bigint,
+  assetAddr: string,
+  payTo: string,
+  decimals: number,
+  symbol: string,
+  expectedChainId?: number
+): Promise<{ txHash: string; amountDisplay: string }> => {
+  if (!signer.provider) {
+    throw new Error('Wallet provider unavailable for direct payment')
+  }
+
+  const network = await signer.provider.getNetwork()
+  if (expectedChainId && Number(network.chainId) !== Number(expectedChainId)) {
+    throw new Error(`Wrong network ${network.chainId}; expected ${expectedChainId}`)
+  }
+
+  if (!payTo || !isAddress(payTo)) {
+    throw new Error('Invalid recipient in payment requirements')
+  }
+  if (amountRaw <= 0n) {
+    throw new Error('Payment amount must be greater than zero')
+  }
+
+  const isNative = !assetAddr || assetAddr.toLowerCase() === ZeroAddress.toLowerCase()
+  if (isNative) {
+    const tx = await signer.sendTransaction({ to: payTo, value: amountRaw })
+    const receipt = await tx.wait(2)
+    console.log('[x402] direct native payment sent', { txHash: tx.hash, to: payTo, amount: amountRaw.toString() })
+    return {
+      txHash: receipt?.hash ?? tx.hash,
+      amountDisplay: formatAmountDisplay(amountRaw, decimals, symbol),
+    }
+  }
+
+  if (!isAddress(assetAddr)) {
+    throw new Error('Invalid asset address in payment requirements')
+  }
+
+  const erc20 = new Contract(assetAddr, ['function transfer(address,uint256) returns (bool)'], signer)
+  const tx = await erc20.transfer(payTo, amountRaw)
+  const receipt = await tx.wait(2)
+  console.log('[x402] direct ERC20 payment sent', {
+    txHash: receipt?.hash ?? tx.hash,
+    to: payTo,
+    amount: amountRaw.toString(),
+    asset: assetAddr,
+  })
+  return {
+    txHash: receipt?.hash ?? tx.hash,
+    amountDisplay: formatAmountDisplay(amountRaw, decimals, symbol),
+  }
+}
+
 export const createPaymentHandler =
-  (getWalletSigner: SignerResolver) =>
+  (
+    getWalletSigner: SignerResolver,
+    getPreferredScheme?: PreferredSchemeResolver,
+    onSchemeResolved?: (info: SchemeResolvedInfo) => void
+  ) =>
   async (
     response: Response,
     options: XhrOptions,
-    body?: any
-  ): Promise<{ header: string; amountDisplay: string }> => {
+    body?: any,
+    onAmountReady?: (amountDisplay: string) => void
+  ): Promise<{ header: string; amountDisplay: string; txHash?: string }> => {
     console.log('[x402] handlePayment: received 402')
-    const rawRequirements = await getPaymentRequirements(response, options, body)
+    const preferredScheme = getPreferredScheme?.() ?? '4mica-credit'
+    let resolvedSchemeInfo: SchemeResolvedInfo | null = null
+    const rawRequirements = await getPaymentRequirements(response, options, body, preferredScheme, info => {
+      resolvedSchemeInfo = info
+      onSchemeResolved?.(info)
+    })
     const requirements = withFixedTabEndpoint(rawRequirements)
     console.log('[x402] parsed requirements', requirements)
+    const scheme = String((requirements as any).scheme ?? '').toLowerCase()
+    const isDirectScheme = scheme === 'x402' || scheme === 'exact'
 
-    const { flow, userAddress } = await buildFlow(getWalletSigner)
-    console.log('[x402] signing payment for user', userAddress)
-    const signed = await flow.signPayment(requirements, userAddress)
-    console.log('[x402] signed payment header length', signed.header.length)
-
-    const amountRaw = (() => {
-      try {
-        return BigInt((requirements as any).maxAmountRequired ?? 0n)
-      } catch {
-        return 0n
-      }
-    })()
-    const assetAddr = (requirements as any).asset ?? ''
+    const { flow, userAddress, signer, publicParams } = await buildFlow(getWalletSigner)
+    const amountRaw = parseAmountRequired((requirements as any).maxAmountRequired ?? 0n)
+    const assetAddr = String((requirements as any).asset ?? '')
+    const payTo = String((requirements as any).payTo ?? '')
     const isDefaultAsset =
       assetAddr &&
       config.defaultTokenAddress &&
       assetAddr.toLowerCase() === config.defaultTokenAddress.toLowerCase()
-    const decimals = isDefaultAsset ? 6 : 18
-    const symbol = isDefaultAsset ? 'USDC' : assetAddr ? assetAddr.slice(0, 6) + '…' + assetAddr.slice(-4) : 'POL'
-    const amountDisplay = `${formatUnits(amountRaw, decimals)} ${symbol}`
+    const explicitDecimals = Number((requirements as any)?.assetDecimals ?? (requirements as any)?.decimals)
+    const assetMeta = signer.provider ? await resolveAssetMeta(signer.provider, assetAddr) : null
+    const decimals =
+      assetMeta?.decimals ??
+      (Number.isFinite(explicitDecimals) && explicitDecimals > 0 ? Number(explicitDecimals) : isDefaultAsset ? 6 : 18)
+    const symbol =
+      assetMeta?.symbol ??
+      (requirements as any)?.assetSymbol ??
+      (isDefaultAsset && !Number.isFinite(explicitDecimals)
+        ? 'USDC'
+        : assetAddr
+          ? assetAddr.slice(0, 6) + '…' + assetAddr.slice(-4)
+          : 'POL')
+    const amountDisplay = formatAmountDisplay(amountRaw, decimals, symbol)
+    onAmountReady?.(amountDisplay)
+
+    if (isDirectScheme) {
+      console.log('[x402] direct settlement selected', {
+        scheme,
+        offered: resolvedSchemeInfo?.offered,
+        chosen: resolvedSchemeInfo?.chosen,
+      })
+      const direct = await settleDirectPayment(
+        signer,
+        amountRaw,
+        assetAddr,
+        payTo,
+        decimals,
+        symbol,
+        publicParams?.chainId
+      )
+      const envelope = new X402PaymentEnvelope(1, 'exact', requirements.network, {
+        txHash: direct.txHash,
+        payTo,
+        asset: assetAddr,
+        amount: amountRaw.toString(),
+      })
+      const header = encodeBase64Payload(envelope.toPayload())
+      return { header, amountDisplay: direct.amountDisplay, txHash: direct.txHash }
+    }
+
+    console.log('[x402] signing payment for user', userAddress)
+    const signed = await flow.signPayment(requirements, userAddress)
+    console.log('[x402] signed payment header length', signed.header.length)
 
     return { header: signed.header, amountDisplay }
   }

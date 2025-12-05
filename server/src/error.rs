@@ -32,4 +32,13 @@ pub enum PaymentError {
 
     #[error("No matching payment requirements found for scheme: {scheme}, network: {network}")]
     NoMatchingRequirements { scheme: String, network: String },
+
+    #[error("Unsupported payment scheme: {0}")]
+    UnsupportedScheme(String),
+
+    #[error("Missing transaction hash for direct settlement")]
+    MissingTxHash,
+
+    #[error("On-chain settlement failed: {0}")]
+    Onchain(String),
 }
