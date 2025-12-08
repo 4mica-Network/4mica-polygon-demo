@@ -12,9 +12,9 @@
   "dependencies": {
     "buffer": "^6.0.3",
     "ethers": "^6.11.1",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "sdk-4mica": "file:../ts-sdk-4mica",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "sdk-4mica": "^0.2.1",
     "video.js": "^8.23.4",
     "xhr": "^2.6.0"
   },
@@ -23,15 +23,15 @@
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
     "@types/video.js": "^7.3.58",
-    "@vitejs/plugin-react": "^5.1.1",
+    "@vitejs/plugin-react": "^5.1.2",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17",
+    "tailwindcss": "^4.1.17",
     "typescript": "^5.7.2",
-    "vite": "^7.2.4"
+    "vite": "^7.2.7"
   }
 }
