@@ -32,13 +32,20 @@ const TARGET_CHAIN = {
   blockExplorerUrls: ['https://amoy.polygonscan.com'],
 }
 
-const initialState = {
+const initialState: {
+  address: string | null
+  chainId: number | null
+  signer: JsonRpcSigner | null
+  isConnecting: boolean
+  hasTriedEager: boolean
+  error: string | null
+} = {
   address: null,
   chainId: null,
   signer: null,
   isConnecting: false,
   hasTriedEager: false,
-  error: null as string | null,
+  error: null,
 }
 
 export const WalletProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
@@ -79,7 +86,6 @@ export const WalletProvider: React.FC<React.PropsWithChildren> = ({ children }) 
       }
 
       const signer = await provider.getSigner()
-      const address = await signer.getAddress()
       const network = await provider.getNetwork()
 
       // Try to switch if not on the target chain

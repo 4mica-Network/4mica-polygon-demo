@@ -1,6 +1,16 @@
 import * as fourMica from 'sdk-4mica'
 import { config } from '../config/env'
-import { Signer, Wallet, AbiCoder, getBytes, JsonRpcProvider, formatUnits, Contract, ZeroAddress, isAddress } from 'ethers'
+import {
+  Signer,
+  Wallet,
+  AbiCoder,
+  getBytes,
+  JsonRpcProvider,
+  formatUnits,
+  Contract,
+  ZeroAddress,
+  isAddress,
+} from 'ethers'
 
 type XhrOptions = {
   uri?: string
@@ -28,13 +38,26 @@ export type SchemeResolvedInfo = {
   usedFallback: boolean
 }
 
-const { PaymentRequirements, RpcProxy, X402Flow, CorePublicParameters, SigningScheme, PaymentGuaranteeRequestClaims, X402PaymentEnvelope } =
-  fourMica
+const {
+  PaymentRequirements,
+  RpcProxy,
+  X402Flow,
+  CorePublicParameters,
+  SigningScheme,
+  PaymentGuaranteeRequestClaims,
+  X402PaymentEnvelope,
+} = fourMica
+
+type CorePublicParametersType = InstanceType<typeof CorePublicParameters>
+type RpcProxyType = InstanceType<typeof RpcProxy>
+type PaymentGuaranteeRequestClaimsType = InstanceType<typeof PaymentGuaranteeRequestClaims>
+type SigningSchemeType = (typeof SigningScheme)[keyof typeof SigningScheme]
+type PaymentRequirementsType = InstanceType<typeof PaymentRequirements>
 
 type SignerResolver = () => Promise<Signer | null>
 
-let params: CorePublicParameters | null = null
-let rpcProxy: RpcProxy | null = null
+let params: CorePublicParametersType | null = null
+let rpcProxy: RpcProxyType | null = null
 
 const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const f = globalThis.fetch as any
@@ -44,7 +67,7 @@ const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   return f.call(globalThis, input, init)
 }
 
-const ensureParams = async (): Promise<CorePublicParameters> => {
+const ensureParams = async (): Promise<CorePublicParametersType> => {
   if (params) return params
   if (!rpcProxy) {
     rpcProxy = new RpcProxy(config.rpcUrl, undefined, boundFetch as any)
@@ -86,7 +109,7 @@ const resolveAssetMeta = async (
 const formatAmountDisplay = (amount: bigint, decimals: number, symbol: string) =>
   `${formatUnits(amount, decimals)} ${symbol}`
 
-const buildTypedMessage = (publicParams: CorePublicParameters, claims: PaymentGuaranteeRequestClaims) => ({
+const buildTypedMessage = (publicParams: CorePublicParametersType, claims: PaymentGuaranteeRequestClaimsType) => ({
   types: {
     EIP712Domain: [
       { name: 'name', type: 'string' },
@@ -118,24 +141,17 @@ const buildTypedMessage = (publicParams: CorePublicParameters, claims: PaymentGu
   },
 })
 
-const encodeEip191 = (claims: PaymentGuaranteeRequestClaims): Uint8Array => {
+const encodeEip191 = (claims: PaymentGuaranteeRequestClaimsType): Uint8Array => {
   const payload = AbiCoder.defaultAbiCoder().encode(
     ['address', 'address', 'uint256', 'uint256', 'address', 'uint64'],
-    [
-      claims.userAddress,
-      claims.recipientAddress,
-      claims.tabId,
-      claims.amount,
-      claims.assetAddress,
-      claims.timestamp,
-    ]
+    [claims.userAddress, claims.recipientAddress, claims.tabId, claims.amount, claims.assetAddress, claims.timestamp]
   )
   return getBytes(payload)
 }
 
 const resolveSigner = async (
   getWalletSigner: SignerResolver,
-  params: CorePublicParameters
+  params: CorePublicParametersType
 ): Promise<{ signer: Signer; address: string; source: 'wallet' | 'env' }> => {
   const envKey = config.walletPrivateKey?.trim()
   if (envKey) {
@@ -164,7 +180,7 @@ const buildFlow = async (getWalletSigner: SignerResolver) => {
   const { signer, address, source } = await resolveSigner(getWalletSigner, publicParams)
 
   const flowSigner = {
-    signPayment: async (claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) => {
+    signPayment: async (claims: PaymentGuaranteeRequestClaimsType, scheme: SigningSchemeType) => {
       const normalizedAddress = address.toLowerCase()
       if (normalizedAddress !== claims.userAddress.toLowerCase()) {
         throw new Error(`Signer address mismatch. Wallet=${address}, claims.userAddress=${claims.userAddress}`)
@@ -212,7 +228,7 @@ const parseRequirements = (
   raw: string,
   preferredScheme: PaymentScheme,
   onSchemeResolved?: (info: SchemeResolvedInfo) => void
-): PaymentRequirements => {
+): PaymentRequirementsType => {
   const parsed: PaymentRequiredResponse = JSON.parse(raw)
   if (!Array.isArray(parsed.accepts) || parsed.accepts.length === 0) {
     throw new Error('paymentRequirements missing from 402 response')
@@ -237,9 +253,7 @@ const parseRequirements = (
     return false
   }
   const directChoice =
-    normalizedPreferred === 'x402'
-      ? parsed.accepts.find(r => directAliases.includes(normalizeScheme(r)))
-      : undefined
+    normalizedPreferred === 'x402' ? parsed.accepts.find(r => directAliases.includes(normalizeScheme(r))) : undefined
   const exact = parsed.accepts.find(matchesPreferred)
   const fallback4mica =
     normalizedPreferred === 'x402' ? undefined : parsed.accepts.find(r => normalizeScheme(r).includes('4mica'))
@@ -317,11 +331,7 @@ const getPaymentRequirements = async (
   const inline = coerceBodyText(response, body)
   if (inline) return parseRequirements(inline, preferredScheme, onSchemeResolved)
 
-  const url =
-    (response as any)._proxiedUri ??
-    (response as any).responseURL ??
-    (response as any).url ??
-    options.uri
+  const url = (response as any)._proxiedUri ?? (response as any).responseURL ?? (response as any).url ?? options.uri
   if (!url) throw new Error('No payment details found in 402 response')
 
   console.log('[x402] refetching 402 body from', url)
@@ -332,7 +342,7 @@ const getPaymentRequirements = async (
   return parseRequirements(fetched, preferredScheme, onSchemeResolved)
 }
 
-const withFixedTabEndpoint = (requirements: PaymentRequirements): PaymentRequirements => {
+const withFixedTabEndpoint = (requirements: PaymentRequirementsType): PaymentRequirementsType => {
   const extra = { ...(requirements.extra ?? {}) }
   const current = extra.tabEndpoint ?? extra.tab_endpoint
   const desiredBase = config.streamServerUrl.replace(/\/$/, '')
@@ -430,7 +440,7 @@ export const createPaymentHandler =
   ): Promise<{ header: string; amountDisplay: string; txHash?: string }> => {
     console.log('[x402] handlePayment: received 402')
     const preferredScheme = getPreferredScheme?.() ?? '4mica-credit'
-    let resolvedSchemeInfo: SchemeResolvedInfo | null = null
+    let resolvedSchemeInfo: SchemeResolvedInfo | undefined = undefined
     const rawRequirements = await getPaymentRequirements(response, options, body, preferredScheme, info => {
       resolvedSchemeInfo = info
       onSchemeResolved?.(info)
@@ -445,9 +455,7 @@ export const createPaymentHandler =
     const assetAddr = String((requirements as any).asset ?? '')
     const payTo = String((requirements as any).payTo ?? '')
     const isDefaultAsset =
-      assetAddr &&
-      config.defaultTokenAddress &&
-      assetAddr.toLowerCase() === config.defaultTokenAddress.toLowerCase()
+      assetAddr && config.defaultTokenAddress && assetAddr.toLowerCase() === config.defaultTokenAddress.toLowerCase()
     const explicitDecimals = Number((requirements as any)?.assetDecimals ?? (requirements as any)?.decimals)
     const assetMeta = signer.provider ? await resolveAssetMeta(signer.provider, assetAddr) : null
     const decimals =
@@ -459,16 +467,17 @@ export const createPaymentHandler =
       (isDefaultAsset && !Number.isFinite(explicitDecimals)
         ? 'USDC'
         : assetAddr
-          ? assetAddr.slice(0, 6) + '…' + assetAddr.slice(-4)
-          : 'POL')
+        ? assetAddr.slice(0, 6) + '…' + assetAddr.slice(-4)
+        : 'POL')
     const amountDisplay = formatAmountDisplay(amountRaw, decimals, symbol)
     onAmountReady?.(amountDisplay)
 
     if (isDirectScheme) {
+      const schemeInfo = resolvedSchemeInfo as SchemeResolvedInfo | undefined
       console.log('[x402] direct settlement selected', {
         scheme,
-        offered: resolvedSchemeInfo?.offered,
-        chosen: resolvedSchemeInfo?.chosen,
+        offered: schemeInfo?.offered ?? [],
+        chosen: schemeInfo?.chosen ?? scheme,
       })
       const direct = await settleDirectPayment(
         signer,

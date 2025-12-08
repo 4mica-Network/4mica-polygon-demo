@@ -11,5 +11,5 @@ export const config: Config = {
   walletPrivateKey: import.meta.env.VITE_WALLET_PRIVATE_KEY || '',
   streamServerUrl: import.meta.env.VITE_STREAM_SERVER_URL || 'http://localhost:3000',
   rpcUrl: import.meta.env.VITE_4MICA_RPC_URL || 'https://api.4mica.xyz/',
-  defaultTokenAddress: import.meta.env.VITE_DEFAULT_TOKEN_ADDRESS || '',
+  defaultTokenAddress: import.meta.env.VITE_DEFAULT_TOKEN_ADDRESS || '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582',
 }
