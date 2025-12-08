@@ -15,6 +15,9 @@ pub struct X402Config {
     #[envconfig(from = "X402_PAY_TO")]
     pub pay_to: String,
 
+    #[envconfig(from = "X402_RPC_URL", default = "https://rpc.ankr.com/polygon_amoy")]
+    pub rpc_url: String,
+
     #[envconfig(
         from = "X402_ASSET",
         // USDC on Polygon Amoy

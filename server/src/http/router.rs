@@ -2,7 +2,7 @@ use crate::http::{model::TabRequestParams, x402};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -76,7 +76,21 @@ async fn handle_stream(
     }
 
     match server::io::stream_file(&file_path).await {
-        Ok(body) => (StatusCode::OK, body).into_response(),
+        Ok(body) => {
+            let mut resp = (StatusCode::OK, body).into_response();
+            if is_playlist {
+                resp.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/vnd.apple.mpegurl"),
+                );
+            } else if filename.ends_with(".ts") {
+                resp.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    HeaderValue::from_static("video/mp2t"),
+                );
+            }
+            resp
+        }
         Err(e) => {
             use server::FileStreamError;
 
@@ -113,7 +127,19 @@ async fn handle_remote_stream(
     }
 
     match server::io::stream_remote_file(&url).await {
-        Ok(body) => (StatusCode::OK, body).into_response(),
+        Ok(remote) => {
+            let mut resp = (StatusCode::OK, remote.body).into_response();
+            if let Some(ct) = remote.content_type {
+                resp.headers_mut()
+                    .insert(axum::http::header::CONTENT_TYPE, ct);
+            } else if is_playlist {
+                resp.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/vnd.apple.mpegurl"),
+                );
+            }
+            resp
+        }
         Err(e) => {
             error!("Failed to stream remote file: {}, Error: {}", url, e);
             (

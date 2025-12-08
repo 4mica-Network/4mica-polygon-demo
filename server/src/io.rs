@@ -1,8 +1,13 @@
-use axum::body::Body;
+use axum::{body::Body, http::HeaderValue};
 use std::path::{Path, PathBuf};
 use tokio_util::io::ReaderStream;
 
 use crate::error::FileStreamError;
+
+pub struct RemoteStream {
+    pub body: Body,
+    pub content_type: Option<HeaderValue>,
+}
 
 pub fn verify_file(base_directory: &str, filename: &str) -> Result<PathBuf, FileStreamError> {
     let file_path = Path::new(base_directory).join(filename);
@@ -30,7 +35,7 @@ pub async fn stream_file(file_path: impl AsRef<Path>) -> Result<Body, FileStream
     Ok(body)
 }
 
-pub async fn stream_remote_file(url: &str) -> Result<Body, anyhow::Error> {
+pub async fn stream_remote_file(url: &str) -> Result<RemoteStream, anyhow::Error> {
     let response = reqwest::get(url).await?;
 
     if !response.status().is_success() {
@@ -40,8 +45,12 @@ pub async fn stream_remote_file(url: &str) -> Result<Body, anyhow::Error> {
         ));
     }
 
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .cloned();
     let stream = response.bytes_stream();
     let body = Body::from_stream(stream);
 
-    Ok(body)
+    Ok(RemoteStream { body, content_type })
 }

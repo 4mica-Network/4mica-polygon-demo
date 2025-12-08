@@ -79,8 +79,20 @@ impl FacilitatorClient {
     /// Constructs a new [`FacilitatorClient`] from a base URL.
     ///
     /// This sets up `./verify` and `./settle` endpoint URLs relative to the base.
-    pub fn try_new(base_url: Url) -> Result<Self, FacilitatorClientError> {
+    pub fn try_new(mut base_url: Url) -> Result<Self, FacilitatorClientError> {
+        if base_url.host_str() == Some("0.0.0.0") {
+            log::warn!(
+                "Facilitator URL host is 0.0.0.0; rewriting to 127.0.0.1 for client requests"
+            );
+            base_url
+                .set_host(Some("127.0.0.1"))
+                .map_err(|e| FacilitatorClientError::UrlParse {
+                    context: "Failed to rewrite facilitator host",
+                    source: e,
+                })?;
+        }
         let client = Client::new();
+        log::info!("Initializing facilitator client at {}", base_url);
         let verify_url =
             base_url
                 .join("./verify")
@@ -104,9 +116,9 @@ impl FacilitatorClient {
                 })?;
 
         let tab_url = base_url
-            .join("./tab")
+            .join("./tabs")
             .map_err(|e| FacilitatorClientError::UrlParse {
-                context: "Failed to construct ./tab URL",
+                context: "Failed to construct ./tabs URL",
                 source: e,
             })?;
 
@@ -157,7 +169,7 @@ impl FacilitatorClient {
             .await
     }
 
-    /// Sends a `POST /tab` request to the facilitator with caching.
+    /// Sends a `POST /tabs` request to the facilitator with caching.
     ///
     /// Tabs are cached to prevent duplicate requests.
     pub async fn request_tab(
@@ -185,8 +197,10 @@ impl FacilitatorClient {
             }
         }
 
-        let response: FacilitatorTabResponse =
-            self.post_json(&self.tab_url, "POST /tab", &request).await?;
+        log::info!("POST /tabs to facilitator {}", self.tab_url);
+        let response: FacilitatorTabResponse = self
+            .post_json(&self.tab_url, "POST /tabs", &request)
+            .await?;
 
         {
             let mut cache = self.tab_cache.write();
@@ -228,7 +242,7 @@ impl FacilitatorClient {
             .await
             .map_err(|e| FacilitatorClientError::Http { context, source: e })?;
 
-        let result = if http_response.status() == StatusCode::OK {
+        if http_response.status() == StatusCode::OK {
             http_response
                 .json::<R>()
                 .await
@@ -244,9 +258,7 @@ impl FacilitatorClient {
                 status,
                 body,
             })
-        };
-
-        result
+        }
     }
 
     /// Generic GET helper that handles JSON serialization, error mapping,
@@ -274,7 +286,7 @@ impl FacilitatorClient {
             .await
             .map_err(|e| FacilitatorClientError::Http { context, source: e })?;
 
-        let result = if http_response.status() == StatusCode::OK {
+        if http_response.status() == StatusCode::OK {
             http_response
                 .json::<R>()
                 .await
@@ -290,8 +302,6 @@ impl FacilitatorClient {
                 status,
                 body,
             })
-        };
-
-        result
+        }
     }
 }
