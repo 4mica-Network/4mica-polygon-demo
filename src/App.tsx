@@ -1,4 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { formatUnits, ZeroAddress } from 'ethers'
+import * as fourMica from 'sdk-4mica'
 import type Player from 'video.js/dist/types/player'
 import VideoPlayer from './components/VideoPlayer'
 import BootstrapLoader from './components/BootstrapLoader'
@@ -6,10 +8,33 @@ import ConnectScreen from './components/ConnectScreen'
 import WalletSidebar from './components/WalletSidebar'
 import ActivityLog from './components/ActivityLog'
 import NetworkSwitchBanner from './components/NetworkSwitchBanner'
+import TabSettlementPrompt from './components/TabSettlementPrompt'
 import { config } from './config/env'
 import { TARGET_CHAIN_ID, useWallet } from './context/WalletContext'
-import { createPaymentHandler, type PaymentScheme, type SchemeResolvedInfo } from './utils/paymentHandler'
+import {
+  createPaymentHandler,
+  type PaymentScheme,
+  type SchemeResolvedInfo,
+  type PaymentTabInfo,
+} from './utils/paymentHandler'
 import { useActivityLog, useWalletBalance, useCollateral, use4MicaParams, useDeposit } from './hooks'
+
+type OpenTabState = {
+  tabId: bigint
+  assetAddress: string
+  recipientAddress: string
+  decimals: number
+  symbol: string
+}
+
+const tabIdToHex = (tabId: bigint) => `0x${tabId.toString(16)}`
+
+const formatTabId = (tabId: bigint) => {
+  const hex = tabIdToHex(tabId)
+  return hex.length > 20 ? `${hex.slice(0, 10)}…${hex.slice(-6)}` : hex
+}
+
+
 
 function App() {
   const {
@@ -30,6 +55,13 @@ function App() {
   const [tokenAddress, setTokenAddress] = useState('')
   const [tokenDecimals, setTokenDecimals] = useState('18')
   const [paymentScheme, setPaymentScheme] = useState<PaymentScheme>('4mica-credit')
+  const [openTab, setOpenTab] = useState<OpenTabState | null>(null)
+  const [tabReqId, setTabReqId] = useState<bigint | null>(null)
+  const [tabDueAmount, setTabDueAmount] = useState<bigint | null>(null)
+  const [tabDueDisplay, setTabDueDisplay] = useState('')
+  const [tabTotalDisplay, setTabTotalDisplay] = useState('')
+  const [showSettlePrompt, setShowSettlePrompt] = useState(false)
+  const [settlingTab, setSettlingTab] = useState(false)
 
   const { logs, appendLog } = useActivityLog()
   const { coreParams, paramsLoading } = use4MicaParams(isConnected, appendLog)
@@ -106,8 +138,7 @@ function App() {
       if (usedFallback && chosen.toLowerCase() !== preferred.toLowerCase()) {
         const offeredList = offered.filter(Boolean).join(', ')
         appendLog(
-          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${
-            offeredList ? ` (offered: ${offeredList})` : ''
+          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${offeredList ? ` (offered: ${offeredList})` : ''
           }.`,
           'warn'
         )
@@ -116,33 +147,279 @@ function App() {
     [appendLog]
   )
 
+  const handleTabObserved = useCallback((tab: PaymentTabInfo) => {
+    setOpenTab(prev => {
+      return {
+        tabId: tab.tabId,
+        assetAddress: tab.assetAddress,
+        recipientAddress: tab.recipientAddress,
+        decimals: tab.decimals,
+        symbol: tab.symbol,
+      }
+    })
+    setTabReqId(null)
+    setTabDueAmount(null)
+    setTabDueDisplay('')
+    setTabTotalDisplay('')
+  }, [])
+
   const getSigner = useCallback(async () => signer, [signer])
 
   const paymentHandler = useMemo(
-    () => createPaymentHandler(getSigner, getPreferredScheme, handleSchemeResolved),
-    [getSigner, getPreferredScheme, handleSchemeResolved]
+    () => createPaymentHandler(getSigner, getPreferredScheme, handleSchemeResolved, handleTabObserved),
+    [getSigner, getPreferredScheme, handleSchemeResolved, handleTabObserved]
   )
+
+  const tabAmountDisplay = useMemo(
+    () => tabTotalDisplay || (openTab ? `${openTab.symbol} due` : ''),
+    [openTab, tabTotalDisplay]
+  )
+
+  const settleAmountDisplay = useMemo(
+    () => tabDueDisplay || (openTab ? `${openTab.symbol} due` : ''),
+    [openTab, tabDueDisplay]
+  )
+
+  const settleTabLabel = useMemo(() => (openTab ? formatTabId(openTab.tabId) : ''), [openTab])
+
+  const buildSdkClient = useCallback(async () => {
+    if (!config.walletPrivateKey) {
+      appendLog('Tab settlement requires VITE_WALLET_PRIVATE_KEY to be set.', 'error')
+      return null
+    }
+
+    try {
+      const builder = new fourMica.ConfigBuilder()
+        .walletPrivateKey(config.walletPrivateKey)
+        .rpcUrl(config.rpcUrl)
+
+      const proxyRpc = config.rpcProxyUrl || coreParams?.ethereumHttpRpcUrl
+      if (proxyRpc) {
+        builder.ethereumHttpRpcUrl(proxyRpc)
+      }
+      if (coreParams?.contractAddress) {
+        builder.contractAddress(coreParams.contractAddress)
+      }
+
+      const cfg = builder.build()
+
+      const originalFetch = globalThis.fetch
+      const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
+        const f = originalFetch as any
+        return f.call(globalThis, input, init)
+      }
+
+        ; (globalThis as any).fetch = boundFetch
+      try {
+        return await fourMica.Client.new(cfg)
+      } finally {
+        ; (globalThis as any).fetch = originalFetch
+      }
+    } catch (err) {
+      appendLog(`4mica client init failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
+      return null
+    }
+  }, [coreParams, appendLog])
+
+  const refreshTabDue = useCallback(async () => {
+    if (!openTab) return null
+    const client = await buildSdkClient()
+    if (!client) return null
+
+    try {
+      const guarantees = await client.recipient.getTabGuarantees(openTab.tabId)
+      if (!guarantees.length) {
+        appendLog(`No guarantee found for tab #${tabIdToHex(openTab.tabId)}.`, 'warn')
+        setTabReqId(null)
+        setTabDueAmount(null)
+        setTabDueDisplay('')
+        setTabTotalDisplay('')
+        return null
+      }
+
+      // Compute total from guarantees: sum all guarantee amounts as requested.
+      const totalAmount = guarantees.reduce((acc, g) => acc + g.amount, 0n)
+
+      const latest = guarantees[guarantees.length - 1]
+      const status = await client.user.getTabPaymentStatus(openTab.tabId)
+      const paid = status?.paid ?? 0n
+      const due = totalAmount > paid ? totalAmount - paid : 0n
+
+      setTabReqId(latest.reqId)
+      setTabDueAmount(due)
+      setTabDueDisplay(`${formatUnits(due, openTab.decimals)} ${openTab.symbol}`)
+      setTabTotalDisplay(`${formatUnits(totalAmount, openTab.decimals)} ${openTab.symbol}`)
+
+      setOpenTab(prev =>
+        prev
+          ? {
+            ...prev,
+            assetAddress: latest.assetAddress || prev.assetAddress,
+            recipientAddress: latest.toAddress || prev.recipientAddress,
+          }
+          : prev
+      )
+
+      return { due, reqId: latest.reqId }
+    } catch (err) {
+      appendLog(`Failed to fetch tab balance: ${err instanceof Error ? err.message : String(err)}`, 'error')
+      setTabReqId(null)
+      setTabDueAmount(null)
+      setTabDueDisplay('')
+      setTabTotalDisplay('')
+      return null
+    } finally {
+      await client.aclose?.()
+    }
+  }, [openTab, buildSdkClient, appendLog])
 
   const paymentEvents = useMemo(
     () => ({
-      onPaymentRequested: (chunkId: string, amount?: string) =>
-        appendLog(`#${chunkId} ${amount ? `${amount}` : ''}`, 'warn'),
-      onPaymentSettled: (chunkId: string, amount?: string, txHash?: string) =>
-        appendLog(`#${chunkId} ${amount ? `${amount}` : 'Settled'}`, 'success', txHash),
-      onPaymentFailed: (chunkId: string, err: unknown, amount?: string) =>
+      onPaymentRequested: (chunkId: string, amount?: string) => {
+        appendLog(`#${chunkId} ${amount ? `${amount}` : ''}`, 'warn')
+        void refreshTabDue()
+      },
+      onPaymentSettled: (chunkId: string, amount?: string, txHash?: string) => {
+        appendLog(`#${chunkId} ${amount ? `${amount}` : 'Settled'}`, 'success', txHash)
+        void refreshTabDue()
+      },
+      onPaymentFailed: (chunkId: string, err: unknown, amount?: string) => {
         appendLog(
-          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${
-            err instanceof Error ? err.message : String(err)
+          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${err instanceof Error ? err.message : String(err)
           }`,
           'error'
-        ),
+        )
+        void refreshTabDue()
+      },
     }),
-    [appendLog]
+    [appendLog, refreshTabDue]
   )
+
+  const ensureTabAllowance = useCallback(
+    async (client: fourMica.Client, amount: bigint) => {
+      if (!openTab) return
+      if (openTab.assetAddress.toLowerCase() === ZeroAddress.toLowerCase()) {
+        appendLog('Native-asset tabs are not supported for quick settlement in this demo.', 'warn')
+        throw new Error('native-asset-tab')
+      }
+
+      if (amount <= 0n) {
+        appendLog('No outstanding allowance needed for this tab.', 'info')
+        return
+      }
+      const amountLabel = amount > 0n ? `${formatUnits(amount, openTab.decimals)} ${openTab.symbol}` : ''
+
+      try {
+        await client.user.approveErc20(openTab.assetAddress, amount)
+        appendLog(`Approval ready for ${amountLabel}`)
+        return
+      } catch (err) {
+        appendLog(
+          `Approval failed (will retry with reset): ${err instanceof Error ? err.message : String(err)}`,
+          'warn'
+        )
+      }
+
+      try {
+        await client.user.approveErc20(openTab.assetAddress, 0n)
+        await client.user.approveErc20(openTab.assetAddress, amount)
+        appendLog(`Approval refreshed for ${amountLabel || 'tab amount'}`)
+      } catch (err) {
+        appendLog(
+          `Approval retry failed: ${err instanceof Error ? err.message : String(err)}. Approve manually then retry.`,
+          'error'
+        )
+        throw err
+      }
+    },
+    [openTab, appendLog]
+  )
+
+  const handleSettleTab = useCallback(async () => {
+    if (!openTab) return
+    if (!coreParams) {
+      appendLog('Missing 4mica contract parameters; try again in a moment.', 'error')
+      return
+    }
+
+    setSettlingTab(true)
+    try {
+      const dueInfo = (await refreshTabDue()) ?? null
+      const due = dueInfo?.due ?? tabDueAmount ?? 0n
+      const reqId = dueInfo?.reqId ?? tabReqId
+
+      if (!reqId || due <= 0n) {
+        appendLog('No outstanding balance to settle.', 'info')
+        setOpenTab(null)
+        setShowSettlePrompt(false)
+        return
+      }
+
+      const client = await buildSdkClient()
+      if (!client) {
+        setSettlingTab(false)
+        setShowSettlePrompt(true)
+        return
+      }
+
+      await ensureTabAllowance(client, due)
+      appendLog(`Settling 4mica tab #${settleTabLabel} for ${settleAmountDisplay || 'the outstanding amount'}…`)
+
+      const receipt: any = await client.user.payTab(
+        openTab.tabId,
+        reqId,
+        due,
+        openTab.recipientAddress,
+        openTab.assetAddress
+      )
+      const txHash = receipt?.transactionHash || receipt?.hash || undefined
+      appendLog(`Tab #${tabIdToHex(openTab.tabId)} settled.`, 'success', txHash)
+      setOpenTab(null)
+      setTabReqId(null)
+      setTabDueAmount(null)
+      setTabDueDisplay('')
+      setTabTotalDisplay('')
+      setShowSettlePrompt(false)
+      await client.aclose?.()
+    } catch (err) {
+      appendLog(`Tab settlement failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setSettlingTab(false)
+    }
+  }, [openTab, coreParams, appendLog, settleAmountDisplay, buildSdkClient, ensureTabAllowance, tabDueAmount, tabReqId, refreshTabDue, settleTabLabel])
 
   const handleDeposit = () => {
     performDeposit(depositMode, depositAmount, tokenAddress, tokenDecimals)
   }
+
+  useEffect(() => {
+    if (!isConnected) {
+      setOpenTab(null)
+      setTabReqId(null)
+      setTabDueAmount(null)
+      setTabDueDisplay('')
+      setTabTotalDisplay('')
+      setShowSettlePrompt(false)
+      setSettlingTab(false)
+    }
+  }, [isConnected])
+
+  useEffect(() => {
+    if (openTab) {
+      refreshTabDue()
+    }
+  }, [openTab, refreshTabDue])
+
+  useEffect(() => {
+    if (!openTab || !tabDueAmount || tabDueAmount <= 0n) return
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      setShowSettlePrompt(true)
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [openTab, tabDueAmount])
 
   const onWrongChain = chainId !== null && chainId !== TARGET_CHAIN_ID
   const defaultTokenAddress = config.defaultTokenAddress
@@ -210,6 +487,10 @@ function App() {
               defaultTokenAddress={defaultTokenAddress}
               depositLoading={depositLoading}
               paramsLoading={paramsLoading}
+              openTab={openTab}
+              tabLabel={settleTabLabel}
+              tabAmountLabel={tabAmountDisplay}
+              settlingTab={settlingTab}
               onWrongChain={onWrongChain}
               onCopyAddress={copyAddress}
               onSchemeChange={setPaymentScheme}
@@ -220,12 +501,25 @@ function App() {
               onDeposit={handleDeposit}
               onSwitchNetwork={switchToTargetChain}
               onDisconnect={disconnect}
+              onSettleTab={handleSettleTab}
+              onShowSettlePrompt={() => setShowSettlePrompt(true)}
             />
           </div>
         ) : (
           <ConnectScreen isConnecting={isConnecting} error={error} onConnect={handleConnect} />
         )}
       </div>
+
+      {openTab && (
+        <TabSettlementPrompt
+          tabLabel={settleTabLabel}
+          amountLabel={settleAmountDisplay || `${openTab.symbol} balance`}
+          visible={showSettlePrompt}
+          settling={settlingTab}
+          onSettle={handleSettleTab}
+          onDismiss={() => setShowSettlePrompt(false)}
+        />
+      )}
     </div>
   )
 }

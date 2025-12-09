@@ -38,6 +38,16 @@ export type SchemeResolvedInfo = {
   usedFallback: boolean
 }
 
+export type PaymentTabInfo = {
+  tabId: bigint
+  assetAddress: string
+  recipientAddress: string
+  amountRaw: bigint
+  amountDisplay: string
+  decimals: number
+  symbol: string
+}
+
 const {
   PaymentRequirements,
   RpcProxy,
@@ -430,77 +440,113 @@ export const createPaymentHandler =
   (
     getWalletSigner: SignerResolver,
     getPreferredScheme?: PreferredSchemeResolver,
-    onSchemeResolved?: (info: SchemeResolvedInfo) => void
-  ) =>
-  async (
-    response: Response,
-    options: XhrOptions,
-    body?: any,
-    onAmountReady?: (amountDisplay: string) => void
-  ): Promise<{ header: string; amountDisplay: string; txHash?: string }> => {
-    console.log('[x402] handlePayment: received 402')
-    const preferredScheme = getPreferredScheme?.() ?? '4mica-credit'
-    let resolvedSchemeInfo: SchemeResolvedInfo | undefined = undefined
-    const rawRequirements = await getPaymentRequirements(response, options, body, preferredScheme, info => {
-      resolvedSchemeInfo = info
-      onSchemeResolved?.(info)
-    })
-    const requirements = withFixedTabEndpoint(rawRequirements)
-    console.log('[x402] parsed requirements', requirements)
-    const scheme = String((requirements as any).scheme ?? '').toLowerCase()
-    const isDirectScheme = scheme === 'x402' || scheme === 'exact'
+    onSchemeResolved?: (info: SchemeResolvedInfo) => void,
+    onTabReady?: (tab: PaymentTabInfo) => void
+  ) => {
+    let activeTab: { tabId: bigint; recipient: string; asset: string } | null = null
 
-    const { flow, userAddress, signer, publicParams } = await buildFlow(getWalletSigner)
-    const amountRaw = parseAmountRequired((requirements as any).maxAmountRequired ?? 0n)
-    const assetAddr = String((requirements as any).asset ?? '')
-    const payTo = String((requirements as any).payTo ?? '')
-    const isDefaultAsset =
-      assetAddr && config.defaultTokenAddress && assetAddr.toLowerCase() === config.defaultTokenAddress.toLowerCase()
-    const explicitDecimals = Number((requirements as any)?.assetDecimals ?? (requirements as any)?.decimals)
-    const assetMeta = signer.provider ? await resolveAssetMeta(signer.provider, assetAddr) : null
-    const decimals =
-      assetMeta?.decimals ??
-      (Number.isFinite(explicitDecimals) && explicitDecimals > 0 ? Number(explicitDecimals) : isDefaultAsset ? 6 : 18)
-    const symbol =
-      assetMeta?.symbol ??
-      (requirements as any)?.assetSymbol ??
-      (isDefaultAsset && !Number.isFinite(explicitDecimals)
-        ? 'USDC'
-        : assetAddr
-        ? assetAddr.slice(0, 6) + '…' + assetAddr.slice(-4)
-        : 'POL')
-    const amountDisplay = formatAmountDisplay(amountRaw, decimals, symbol)
-    onAmountReady?.(amountDisplay)
-
-    if (isDirectScheme) {
-      const schemeInfo = resolvedSchemeInfo as SchemeResolvedInfo | undefined
-      console.log('[x402] direct settlement selected', {
-        scheme,
-        offered: schemeInfo?.offered ?? [],
-        chosen: schemeInfo?.chosen ?? scheme,
+    return async (
+      response: Response,
+      options: XhrOptions,
+      body?: any,
+      onAmountReady?: (amountDisplay: string) => void
+    ): Promise<{ header: string; amountDisplay: string; txHash?: string; tabInfo?: PaymentTabInfo }> => {
+      console.log('[x402] handlePayment: received 402')
+      const preferredScheme = getPreferredScheme?.() ?? '4mica-credit'
+      let resolvedSchemeInfo: SchemeResolvedInfo | undefined = undefined
+      const rawRequirements = await getPaymentRequirements(response, options, body, preferredScheme, info => {
+        resolvedSchemeInfo = info
+        onSchemeResolved?.(info)
       })
-      const direct = await settleDirectPayment(
-        signer,
+      const requirements = withFixedTabEndpoint(rawRequirements)
+      console.log('[x402] parsed requirements', requirements)
+      const scheme = String((requirements as any).scheme ?? '').toLowerCase()
+      const isDirectScheme = scheme === 'x402' || scheme === 'exact'
+
+      const { flow, userAddress, signer, publicParams } = await buildFlow(getWalletSigner)
+      const amountRaw = parseAmountRequired((requirements as any).maxAmountRequired ?? 0n)
+      const assetAddr = String((requirements as any).asset ?? '')
+      const payTo = String((requirements as any).payTo ?? '')
+      const isDefaultAsset =
+        assetAddr && config.defaultTokenAddress && assetAddr.toLowerCase() === config.defaultTokenAddress.toLowerCase()
+      const explicitDecimals = Number((requirements as any)?.assetDecimals ?? (requirements as any)?.decimals)
+      const assetMeta = signer.provider ? await resolveAssetMeta(signer.provider, assetAddr) : null
+      const decimals =
+        assetMeta?.decimals ??
+        (Number.isFinite(explicitDecimals) && explicitDecimals > 0 ? Number(explicitDecimals) : isDefaultAsset ? 6 : 18)
+      const symbol =
+        assetMeta?.symbol ??
+        (requirements as any)?.assetSymbol ??
+        (isDefaultAsset && !Number.isFinite(explicitDecimals)
+          ? 'USDC'
+          : assetAddr
+            ? assetAddr.slice(0, 6) + '…' + assetAddr.slice(-4)
+            : 'POL')
+      const amountDisplay = formatAmountDisplay(amountRaw, decimals, symbol)
+      onAmountReady?.(amountDisplay)
+
+      if (isDirectScheme) {
+        const schemeInfo = resolvedSchemeInfo as SchemeResolvedInfo | undefined
+        console.log('[x402] direct settlement selected', {
+          scheme,
+          offered: schemeInfo?.offered ?? [],
+          chosen: schemeInfo?.chosen ?? scheme,
+        })
+        const direct = await settleDirectPayment(
+          signer,
+          amountRaw,
+          assetAddr,
+          payTo,
+          decimals,
+          symbol,
+          publicParams?.chainId
+        )
+        const envelope = new X402PaymentEnvelope(1, 'exact', requirements.network, {
+          txHash: direct.txHash,
+          payTo,
+          asset: assetAddr,
+          amount: amountRaw.toString(),
+        })
+        const header = encodeBase64Payload(envelope.toPayload())
+        return { header, amountDisplay: direct.amountDisplay, txHash: direct.txHash }
+      }
+
+      console.log('[x402] signing payment for user', userAddress)
+
+      let existingTabId: bigint | undefined
+      if (
+        activeTab &&
+        activeTab.recipient.toLowerCase() === payTo.toLowerCase() &&
+        activeTab.asset.toLowerCase() === assetAddr.toLowerCase()
+      ) {
+        existingTabId = activeTab.tabId
+        console.log('[x402] reusing existing tab', existingTabId)
+      } else {
+        if (activeTab) {
+          console.log('[x402] active tab mismatch or missing', { active: activeTab, req: { payTo, assetAddr } })
+        }
+      }
+
+      const signed = await flow.signPayment(requirements, userAddress, existingTabId as any)
+      console.log('[x402] signed payment header length', signed.header.length)
+
+      const tabInfo: PaymentTabInfo = {
+        tabId: signed.claims.tabId,
+        assetAddress: signed.claims.assetAddress,
+        recipientAddress: signed.claims.recipientAddress,
         amountRaw,
-        assetAddr,
-        payTo,
+        amountDisplay,
         decimals,
         symbol,
-        publicParams?.chainId
-      )
-      const envelope = new X402PaymentEnvelope(1, 'exact', requirements.network, {
-        txHash: direct.txHash,
-        payTo,
-        asset: assetAddr,
-        amount: amountRaw.toString(),
-      })
-      const header = encodeBase64Payload(envelope.toPayload())
-      return { header, amountDisplay: direct.amountDisplay, txHash: direct.txHash }
+      }
+      onTabReady?.(tabInfo)
+
+      activeTab = {
+        tabId: signed.claims.tabId,
+        recipient: signed.claims.recipientAddress,
+        asset: signed.claims.assetAddress,
+      }
+
+      return { header: signed.header, amountDisplay, tabInfo }
     }
-
-    console.log('[x402] signing payment for user', userAddress)
-    const signed = await flow.signPayment(requirements, userAddress)
-    console.log('[x402] signed payment header length', signed.header.length)
-
-    return { header: signed.header, amountDisplay }
   }
