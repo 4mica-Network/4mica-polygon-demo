@@ -27,36 +27,14 @@ type OpenTabState = {
   symbol: string
 }
 
+const tabIdToHex = (tabId: bigint) => `0x${tabId.toString(16)}`
+
 const formatTabId = (tabId: bigint) => {
-  const raw = tabId.toString()
-  return raw.length > 14 ? `${raw.slice(0, 6)}…${raw.slice(-4)}` : raw
+  const hex = tabIdToHex(tabId)
+  return hex.length > 20 ? `${hex.slice(0, 10)}…${hex.slice(-6)}` : hex
 }
 
-type GuaranteeCertificate = { claims?: unknown }
 
-const getGuaranteeTotalAmount = (guarantee: fourMica.GuaranteeInfo) => {
-  if (!guarantee.certificate) return null
-
-  const parsedCert =
-    typeof guarantee.certificate === 'string'
-      ? (() => {
-          try {
-            return JSON.parse(guarantee.certificate) as GuaranteeCertificate
-          } catch {
-            return null
-          }
-        })()
-      : (guarantee.certificate as GuaranteeCertificate | null)
-
-  const claimsHex = parsedCert?.claims
-  if (typeof claimsHex !== 'string') return null
-
-  try {
-    return fourMica.decodeGuaranteeClaims(claimsHex)?.totalAmount ?? null
-  } catch {
-    return null
-  }
-}
 
 function App() {
   const {
@@ -160,8 +138,7 @@ function App() {
       if (usedFallback && chosen.toLowerCase() !== preferred.toLowerCase()) {
         const offeredList = offered.filter(Boolean).join(', ')
         appendLog(
-          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${
-            offeredList ? ` (offered: ${offeredList})` : ''
+          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${offeredList ? ` (offered: ${offeredList})` : ''
           }.`,
           'warn'
         )
@@ -232,11 +209,11 @@ function App() {
         return f.call(globalThis, input, init)
       }
 
-      ;(globalThis as any).fetch = boundFetch
+        ; (globalThis as any).fetch = boundFetch
       try {
         return await fourMica.Client.new(cfg)
       } finally {
-        ;(globalThis as any).fetch = originalFetch
+        ; (globalThis as any).fetch = originalFetch
       }
     } catch (err) {
       appendLog(`4mica client init failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
@@ -252,7 +229,7 @@ function App() {
     try {
       const guarantees = await client.recipient.getTabGuarantees(openTab.tabId)
       if (!guarantees.length) {
-        appendLog(`No guarantee found for tab #${openTab.tabId}.`, 'warn')
+        appendLog(`No guarantee found for tab #${tabIdToHex(openTab.tabId)}.`, 'warn')
         setTabReqId(null)
         setTabDueAmount(null)
         setTabDueDisplay('')
@@ -260,14 +237,8 @@ function App() {
         return null
       }
 
-      // Compute total from guarantees: prefer the max cumulative total in certificates; otherwise sum per-req amounts.
-      const cumulativeTotals = guarantees
-        .map(g => getGuaranteeTotalAmount(g))
-        .filter((v): v is bigint => typeof v === 'bigint')
-      const totalAmount =
-        cumulativeTotals.length > 0
-          ? cumulativeTotals.reduce((max, val) => (val > max ? val : max), 0n)
-          : guarantees.reduce((acc, g) => acc + g.amount, 0n)
+      // Compute total from guarantees: sum all guarantee amounts as requested.
+      const totalAmount = guarantees.reduce((acc, g) => acc + g.amount, 0n)
 
       const latest = guarantees[guarantees.length - 1]
       const status = await client.user.getTabPaymentStatus(openTab.tabId)
@@ -282,10 +253,10 @@ function App() {
       setOpenTab(prev =>
         prev
           ? {
-              ...prev,
-              assetAddress: latest.assetAddress || prev.assetAddress,
-              recipientAddress: latest.toAddress || prev.recipientAddress,
-            }
+            ...prev,
+            assetAddress: latest.assetAddress || prev.assetAddress,
+            recipientAddress: latest.toAddress || prev.recipientAddress,
+          }
           : prev
       )
 
@@ -314,8 +285,7 @@ function App() {
       },
       onPaymentFailed: (chunkId: string, err: unknown, amount?: string) => {
         appendLog(
-          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${
-            err instanceof Error ? err.message : String(err)
+          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${err instanceof Error ? err.message : String(err)
           }`,
           'error'
         )
@@ -403,7 +373,7 @@ function App() {
         openTab.assetAddress
       )
       const txHash = receipt?.transactionHash || receipt?.hash || undefined
-      appendLog(`Tab #${openTab.tabId} settled.`, 'success', txHash)
+      appendLog(`Tab #${tabIdToHex(openTab.tabId)} settled.`, 'success', txHash)
       setOpenTab(null)
       setTabReqId(null)
       setTabDueAmount(null)
