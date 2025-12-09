@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Contract, formatUnits, isAddress } from 'ethers'
 import type { JsonRpcSigner } from 'ethers'
-import core4micaAbi from 'sdk-4mica/dist/abi/core4mica.json'
 import * as fourMica from 'sdk-4mica'
+import { useClient } from './useClient'
 
-interface CollateralItem {
+export interface CollateralItem {
   asset: string
   symbol: string
   decimals: number
@@ -19,86 +18,105 @@ export const useCollateral = (
   coreParams: fourMica.CorePublicParameters | null,
   appendLog: (entry: string, tone?: 'info' | 'warn' | 'success' | 'error') => void
 ) => {
+  const { client, clientLoading } = useClient(appendLog)
   const [collateral, setCollateral] = useState<CollateralItem[]>([])
   const [collateralLoading, setCollateralLoading] = useState(false)
 
-  const resolveTokenMeta = useCallback(
-    async (tokenAddr: string) => {
-      if (!signer?.provider) {
-        throw new Error('Wallet provider unavailable')
-      }
-      const erc20 = new Contract(
-        tokenAddr,
-        ['function symbol() view returns (string)', 'function decimals() view returns (uint8)'],
-        signer.provider
-      )
-      try {
-        const [symbol, decimalsValue] = await Promise.all([erc20.symbol(), erc20.decimals()])
-        return { symbol: String(symbol), decimals: Number(decimalsValue) || 18 }
-      } catch (err) {
-        appendLog(
-          `Token metadata fetch failed for ${tokenAddr}: ${err instanceof Error ? err.message : String(err)}`,
-          'error'
-        )
-        return null
-      }
-    },
-    [signer, appendLog]
-  )
-
   const fetchCollateral = useCallback(async () => {
-    if (!coreParams || !address || !signer?.provider) return
+    if (!client) {
+      if (isConnected) appendLog('SDK client not ready yet.', 'warn')
+      return
+    }
+
     setCollateralLoading(true)
     try {
-      const contract = new Contract(
-        coreParams.contractAddress,
-        (core4micaAbi as any).abi ?? core4micaAbi,
-        signer.provider
-      )
-      const raw: any[] = await contract.getUserAllAssets(address)
-      const parsed = await Promise.all(
-        raw.map(async item => {
-          const assetAddr = String(item.asset ?? item[0] ?? '')
-          const zeroAddress = '0x0000000000000000000000000000000000000000'
-          if (!assetAddr || !isAddress(assetAddr)) return null
-          const collateralRaw = BigInt(item.collateral ?? item[1] ?? 0)
-          const withdrawalRaw = BigInt(item.withdrawal_request_amount ?? item[3] ?? 0)
-          const isNative = assetAddr.toLowerCase() === zeroAddress
-          const meta = isNative ? { symbol: 'POL', decimals: 18 } : await resolveTokenMeta(assetAddr)
-          const decimals = meta?.decimals ?? 18
-          const symbol = meta?.symbol ?? `${assetAddr.slice(0, 6)}...${assetAddr.slice(-4)}`
-          return {
-            asset: assetAddr,
-            symbol,
-            decimals,
-            collateral: formatUnits(collateralRaw, decimals),
-            withdrawalRequested: formatUnits(withdrawalRaw, decimals),
+      const assets = await client.user.getUser()
+
+      // We need to fetch symbol/decimals for these assets to display them nicely
+      // The SDK UserInfo result has: asset (address), collateral (bigint), withdrawalRequestAmount (bigint)
+      // The SDK does NOT return symbol/decimals, so we might still need a helper or use the SDK if it has one?
+      // SDK client.user.getUser() returns UserInfo[].
+      // Looking at my analysis earlier, I didn't see a helper for metadata in the SDK UserClient.
+      // However, the original code had `resolveTokenMeta`.
+      // I should probably keep `resolveTokenMeta` or implement a simplified version.
+      // Actually, since I have the `client` which has a `gateway` composed of `ContractGateway`,
+      // I can check if `ContractGateway` has a helper. It seems it has `erc20(address)` but it's private.
+      // So I still need to resolve metadata manually or using a provider.
+      // But `client.gateway.provider` is available!
+
+      const parsed = await Promise.all(assets.map(async (item) => {
+        // item is UserInfo { asset, collateral, withdrawalRequestAmount ... }
+        const assetAddr = item.asset
+        if (!assetAddr) return null
+
+        // We can use the provider from the client's gateway to fetch metadata
+        // Client -> gateway -> provider
+        const provider = (client as any).gateway.provider
+        // (Need to cast to access gateway if it's protected, or check if it's public. 
+        // `UserClient` has `private client: Client`. `Client` has `readonly gateway`. So `client.client.gateway`... ?
+        // Wait, `UserClient` wraps `Client`. `useClient` returns `Client`.
+        // So `client.gateway` is accessible.
+
+        let symbol = 'UNK'
+        let decimals = 18
+        const zeroAddress = '0x0000000000000000000000000000000000000000'
+        const isNative = assetAddr.toLowerCase() === zeroAddress
+
+        if (isNative) {
+          symbol = 'POL'
+          decimals = 18
+        } else {
+          try {
+            // Manual fallback for metadata since SDK doesn't expose ERC20 view easily
+            // Or I can use `new Contract` if I import it from ethers?
+            const { Contract } = await import('ethers')
+            const erc20 = new Contract(
+              assetAddr,
+              ['function symbol() view returns (string)', 'function decimals() view returns (uint8)'],
+              provider
+            )
+            const [s, d] = await Promise.all([erc20.symbol(), erc20.decimals()])
+            symbol = String(s)
+            decimals = Number(d) || 18
+          } catch (err) {
+            symbol = `${assetAddr.slice(0, 6)}...${assetAddr.slice(-4)}`
           }
-        })
-      )
+        }
+
+        const { formatUnits } = await import('ethers')
+        return {
+          asset: assetAddr,
+          symbol,
+          decimals,
+          collateral: formatUnits(item.collateral, decimals),
+          withdrawalRequested: formatUnits(item.withdrawalRequestAmount, decimals)
+        }
+      }))
+
       setCollateral(parsed.filter(Boolean) as CollateralItem[])
+
     } catch (err) {
-      appendLog(`Collateral fetch failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
+      appendLog(`Collateral fetch failed (SDK): ${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
       setCollateralLoading(false)
     }
-  }, [coreParams, address, signer, resolveTokenMeta, appendLog])
+  }, [client, appendLog, isConnected])
 
   useEffect(() => {
-    if (isConnected) {
+    if (isConnected && client) {
       fetchCollateral()
     } else {
       setCollateral([])
     }
-  }, [isConnected, fetchCollateral])
+  }, [isConnected, client, fetchCollateral])
 
   useEffect(() => {
-    if (!isConnected) return
+    if (!isConnected || !client) return
     const id = setInterval(() => {
       fetchCollateral()
     }, 10000)
     return () => clearInterval(id)
-  }, [isConnected, fetchCollateral])
+  }, [isConnected, client, fetchCollateral])
 
-  return { collateral, collateralLoading, fetchCollateral }
+  return { collateral, collateralLoading: collateralLoading || clientLoading, fetchCollateral }
 }

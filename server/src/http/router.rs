@@ -7,8 +7,10 @@ use axum::{
     routing::{get, post},
 };
 use log::error;
+use reqwest::Client;
 use rust_sdk_4mica::U256;
 use serde::Deserialize;
+use serde_json::Value;
 use server::x402::FacilitatorClient;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -29,6 +31,7 @@ struct RemoteStreamQuery {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/tab", post(handle_tab))
+        .route("/rpc", post(handle_rpc_proxy))
         .route("/stream/remote", get(handle_remote_stream))
         .route("/stream/{filename}", get(handle_stream))
         .with_state(state)
@@ -145,6 +148,35 @@ async fn handle_remote_stream(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch remote file",
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn handle_rpc_proxy(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    let client = Client::new();
+    let upstream = state.config.x402.rpc_url.clone();
+
+    match client.post(upstream).json(&body).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "Upstream RPC error".to_string());
+            let mut response = (status, text).into_response();
+            response.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            response
+        }
+        Err(e) => {
+            error!("RPC proxy request failed: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("RPC proxy request failed: {e}"),
             )
                 .into_response()
         }

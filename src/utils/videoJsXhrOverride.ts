@@ -1,4 +1,5 @@
 import { config } from '../config/env'
+import type { PaymentTabInfo } from './paymentHandler'
 import type { XhrUriConfig } from 'xhr'
 
 type XhrCallback = (error: any, response: any, body: any) => void
@@ -8,7 +9,7 @@ type PaymentHandler = (
   options: XhrUriConfig,
   body?: any,
   onAmountReady?: (amountDisplay: string) => void
-) => Promise<{ header: string; amountDisplay: string; txHash?: string }>
+) => Promise<{ header: string; amountDisplay: string; txHash?: string; tabInfo?: PaymentTabInfo }>
 
 export type PaymentEvents = {
   onPaymentRequested?: (chunkId: string, amount?: string) => void

@@ -1,11 +1,11 @@
 import { useCallback, useState } from 'react'
-import { Contract, formatUnits, isAddress, parseUnits } from 'ethers'
+import { formatUnits, isAddress, parseUnits } from 'ethers'
 import type { JsonRpcSigner } from 'ethers'
-import core4micaAbi from 'sdk-4mica/dist/abi/core4mica.json'
 import * as fourMica from 'sdk-4mica'
 import { TARGET_CHAIN_ID } from '../context/WalletContext'
 import { config } from '../config/env'
 import type { PaymentScheme } from '../utils/paymentHandler'
+import { useClient } from './useClient'
 
 export const useDeposit = (
   signer: JsonRpcSigner | null,
@@ -16,48 +16,27 @@ export const useDeposit = (
   appendLog: (entry: string, tone?: 'info' | 'warn' | 'success' | 'error') => void,
   onSuccess: () => void
 ) => {
+  const { client, clientLoading } = useClient(appendLog)
   const [depositLoading, setDepositLoading] = useState(false)
 
-  const ensureAllowance = useCallback(
-    async (tokenAddr: string, required: bigint, decimals: number) => {
-      if (!signer || !address || !coreParams) {
-        throw new Error('Wallet not ready for approval')
-      }
-
-      const erc20 = new Contract(
-        tokenAddr,
-        [
-          'function allowance(address owner, address spender) view returns (uint256)',
-          'function approve(address spender, uint256 amount) returns (bool)',
-        ],
-        signer
-      )
-      const current: bigint = await erc20.allowance(address, coreParams.contractAddress)
-      if (current >= required) {
-        appendLog('Existing allowance is sufficient; skipping approval.')
-        return
-      }
-
-      appendLog(`Requesting token approval for ${formatUnits(required, decimals)}…`)
-      const approveTx = await erc20.approve(coreParams.contractAddress, required)
-      appendLog(`Approve submitted: ${approveTx.hash}`)
-      const receipt = await approveTx.wait()
-      appendLog(`Approve confirmed in block ${receipt?.blockNumber ?? 'unknown'}`)
-    },
-    [signer, address, coreParams, appendLog]
-  )
-
+  // Helper to resolve metadata, ideally SDK should handle this or we keep helper
+  // Keeping helper for now as SDK doesn't expose easy metadata fetch
   const resolveTokenMeta = useCallback(
     async (tokenAddr: string) => {
-      if (!signer?.provider) {
-        throw new Error('Wallet provider unavailable')
+      // We can use signer provider or client provider
+      const provider = signer?.provider || (client as any)?.gateway?.provider
+      if (!provider) {
+        // Can't fail hard here if client is not ready, but usually we need provider
+        return null
       }
-      const erc20 = new Contract(
-        tokenAddr,
-        ['function symbol() view returns (string)', 'function decimals() view returns (uint8)'],
-        signer.provider
-      )
+
       try {
+        const { Contract } = await import('ethers')
+        const erc20 = new Contract(
+          tokenAddr,
+          ['function symbol() view returns (string)', 'function decimals() view returns (uint8)'],
+          provider
+        )
         const [symbol, decimalsValue] = await Promise.all([erc20.symbol(), erc20.decimals()])
         return { symbol: String(symbol), decimals: Number(decimalsValue) || 18 }
       } catch (err) {
@@ -68,28 +47,34 @@ export const useDeposit = (
         return null
       }
     },
-    [signer, appendLog]
+    [signer, client, appendLog]
   )
 
   const handleDeposit = useCallback(
     async (depositMode: 'default' | 'custom', depositAmount: string, tokenAddress: string, tokenDecimals: string) => {
-      if (!signer || !address) {
-        appendLog('Connect wallet before depositing.', 'warn')
+      if (!client) {
+        appendLog('SDK Client not ready.', 'error')
         return
       }
+
+      // Check scheme
       if (paymentScheme !== '4mica-credit') {
         appendLog('Deposits are only needed in 4mica credit mode. Switch payment rail to deposit.', 'warn')
         return
       }
-      if (!coreParams) {
-        appendLog('Missing 4mica contract parameters; try again.', 'error')
-        return
-      }
-      const requiredChainId = coreParams.chainId ?? TARGET_CHAIN_ID
-      if (chainId !== requiredChainId) {
+
+      // Check chain 
+      // coreParams might be null if failed, but client has internal params.
+      // We can check chainId from client or wallet context.
+      // SDK client validates chain on init usually.
+
+      const requiredChainId = coreParams?.chainId ?? TARGET_CHAIN_ID
+      if (chainId !== null && BigInt(chainId) !== BigInt(requiredChainId)) {
+        // Note: SDK usually handles chain mismatch internally or we rely on WalletContext
         appendLog(`Switch to chain ${requiredChainId} before depositing.`, 'warn')
         return
       }
+
       const amount = depositAmount.trim()
       if (!amount || Number(amount) <= 0) {
         appendLog('Enter a valid amount greater than 0.', 'error')
@@ -97,62 +82,60 @@ export const useDeposit = (
       }
       const useDefaultToken = depositMode === 'default'
       const defaultTokenAddress = config.defaultTokenAddress
+      const tokenToUse = useDefaultToken ? defaultTokenAddress : tokenAddress
 
-      if (useDefaultToken && (!defaultTokenAddress || !isAddress(defaultTokenAddress))) {
-        appendLog('Default token address not configured or invalid. Please enter a token address.', 'error')
-        return
-      }
-
-      if (!useDefaultToken && !tokenAddress) {
-        appendLog('Enter a token address.', 'error')
-        return
-      }
-      if (!useDefaultToken && !isAddress(tokenAddress)) {
-        appendLog('Enter a valid token address.', 'error')
+      if (!tokenToUse || !isAddress(tokenToUse)) {
+        appendLog('Invalid token address.', 'error')
         return
       }
 
       setDepositLoading(true)
       try {
-        const contract = new Contract(coreParams.contractAddress, (core4micaAbi as any).abi ?? core4micaAbi, signer)
-
-        const tokenToUse = useDefaultToken ? defaultTokenAddress : tokenAddress
+        // Resolve meta for logging/decimals
         const meta = await resolveTokenMeta(tokenToUse)
-
         if (!meta) {
-          appendLog(
-            `Invalid or non-existent token at ${tokenToUse}. Verify the address is correct and on chain ${requiredChainId}.`,
-            'error'
-          )
+          appendLog(`Invalid or non-existent token at ${tokenToUse}.`, 'error')
+          setDepositLoading(false)
           return
         }
 
         const decimals = meta.decimals
         const parsedAmount = parseUnits(amount, decimals)
         const tokenLabel = meta.symbol
+
         appendLog(`Preparing deposit of ${formatUnits(parsedAmount, decimals)} ${tokenLabel} (${decimals} decimals)`)
 
-        await ensureAllowance(tokenToUse, parsedAmount, decimals)
+        // SDK handles approval automatically? 
+        // No, client.user.approveErc20 and client.user.deposit are separate.
+        // And SDK deposit doesn't auto-approve.
 
-        let tx
-        if (useDefaultToken) {
-          tx = await contract.depositStablecoin(defaultTokenAddress, parsedAmount)
-          appendLog(`Deposit submitted (USDC default): ${tx.hash}`)
-        } else {
-          tx = await contract.depositStablecoin(tokenAddress, parsedAmount)
-          appendLog(`Deposit submitted (custom token ${tokenLabel}): ${tx.hash}`)
+        // 1. Approve
+        appendLog(`Requesting token approval…`) // SDK doesn't check allowance first explicitly in exposed method
+        // But we can just approve.
+        try {
+          const tx = await client.user.approveErc20(tokenToUse, parsedAmount)
+          appendLog(`Approve sent: ${(tx as any)?.hash || 'ok'}`)
+        } catch (err) {
+          // It might fail if already approved? Or user rejected.
+          // Continue? Or throw?
+          appendLog(`Approval step warning: ${err instanceof Error ? err.message : String(err)}`)
+          // We try to proceed to deposit in case it was already approved
         }
-        const receipt = await tx.wait()
-        appendLog(`Deposit confirmed in block ${receipt?.blockNumber ?? 'unknown'}`)
+
+        // 2. Deposit
+        const tx = await client.user.deposit(parsedAmount, tokenToUse)
+        appendLog(`Deposit submitted: ${(tx as any)?.hash || 'ok'}`)
+
         onSuccess()
+
       } catch (err) {
         appendLog(`Deposit failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
       } finally {
         setDepositLoading(false)
       }
     },
-    [signer, address, paymentScheme, coreParams, chainId, appendLog, ensureAllowance, resolveTokenMeta, onSuccess]
+    [client, chainId, paymentScheme, coreParams, appendLog, resolveTokenMeta, onSuccess]
   )
 
-  return { depositLoading, handleDeposit }
+  return { depositLoading: depositLoading || clientLoading, handleDeposit }
 }

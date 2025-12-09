@@ -1,5 +1,5 @@
 /// Copied and modified from x402-axum crate: https://github.com/x402-rs/x402-rs/blob/main/crates/x402-axum/src/facilitator_client.rs
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use http::{HeaderMap, StatusCode};
 use parking_lot::RwLock;
 use reqwest::Client;
@@ -188,10 +188,8 @@ impl FacilitatorClient {
         {
             let cache = self.tab_cache.read();
             if let Some(cached) = cache.get(&tab_key) {
-                // Make sure the tab is not expired
-                if cached.expires_at > now
-                    && cached.tab.start_timestamp + cached.tab.ttl_seconds < now.timestamp()
-                {
+                // Reuse cached tab while it is still fresh
+                if cached.expires_at > now {
                     return Ok(cached.tab.clone());
                 }
             }
@@ -202,13 +200,21 @@ impl FacilitatorClient {
             .post_json(&self.tab_url, "POST /tabs", &request)
             .await?;
 
+        // Expire cache at the sooner of the facilitator TTL or a 1-hour cap
+        let ttl_expiry = response
+            .start_timestamp
+            .checked_add(response.ttl_seconds)
+            .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
+        let max_cache_window = now + chrono::Duration::hours(1);
+        let expires_at = ttl_expiry.map(|ts| ts.min(max_cache_window)).unwrap_or(max_cache_window);
+
         {
             let mut cache = self.tab_cache.write();
             cache.insert(
                 tab_key,
                 CachedTab {
                     tab: response.clone(),
-                    expires_at: now + chrono::Duration::hours(1),
+                    expires_at,
                 },
             );
         }

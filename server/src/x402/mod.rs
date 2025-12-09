@@ -227,7 +227,8 @@ fn validate_erc20_transfer(
 ) -> Result<(), PaymentError> {
     let transfer = receipt.logs.iter().find(|log| {
         normalize_address(&log.address) == asset
-            && log.topics.first().map(|t| t.to_lowercase()) == Some(ERC20_TRANSFER_TOPIC.to_string())
+            && log.topics.first().map(|t| t.to_lowercase())
+                == Some(ERC20_TRANSFER_TOPIC.to_string())
             && log
                 .topics
                 .get(2)
