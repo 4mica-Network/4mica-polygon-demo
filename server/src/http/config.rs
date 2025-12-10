@@ -7,7 +7,7 @@ pub struct Config {
     #[envconfig(from = "LOG_LEVEL", default = "info")]
     pub log_level: log::Level,
 
-    #[envconfig(from = "FILE_DIRECTORY", default = "./files")]
+    #[envconfig(from = "FILE_DIRECTORY", default = "./data/hls")]
     pub file_directory: String,
 
     #[envconfig(from = "SERVER_PORT", default = "3000")]
