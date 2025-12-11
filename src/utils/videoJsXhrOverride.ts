@@ -125,6 +125,7 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any, ev
         awaitingSettlement = true
         settlementNotified = false
         chunkId = `${++paymentCounter}`
+
         paymentHandler(response, options, body, amountDisplay => {
           const key = chunkId ?? `${paymentCounter}`
           chunkMeta.set(key, { amount: amountDisplay })

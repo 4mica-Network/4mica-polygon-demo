@@ -34,8 +34,6 @@ const formatTabId = (tabId: bigint) => {
   return hex.length > 20 ? `${hex.slice(0, 10)}…${hex.slice(-6)}` : hex
 }
 
-
-
 function App() {
   const {
     address,
@@ -138,7 +136,8 @@ function App() {
       if (usedFallback && chosen.toLowerCase() !== preferred.toLowerCase()) {
         const offeredList = offered.filter(Boolean).join(', ')
         appendLog(
-          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${offeredList ? ` (offered: ${offeredList})` : ''
+          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${
+            offeredList ? ` (offered: ${offeredList})` : ''
           }.`,
           'warn'
         )
@@ -148,7 +147,7 @@ function App() {
   )
 
   const handleTabObserved = useCallback((tab: PaymentTabInfo) => {
-    setOpenTab(prev => {
+    setOpenTab(() => {
       return {
         tabId: tab.tabId,
         assetAddress: tab.assetAddress,
@@ -189,9 +188,7 @@ function App() {
     }
 
     try {
-      const builder = new fourMica.ConfigBuilder()
-        .walletPrivateKey(config.walletPrivateKey)
-        .rpcUrl(config.rpcUrl)
+      const builder = new fourMica.ConfigBuilder().walletPrivateKey(config.walletPrivateKey).rpcUrl(config.rpcUrl)
 
       const proxyRpc = config.rpcProxyUrl || coreParams?.ethereumHttpRpcUrl
       if (proxyRpc) {
@@ -209,11 +206,11 @@ function App() {
         return f.call(globalThis, input, init)
       }
 
-        ; (globalThis as any).fetch = boundFetch
+      ;(globalThis as any).fetch = boundFetch
       try {
         return await fourMica.Client.new(cfg)
       } finally {
-        ; (globalThis as any).fetch = originalFetch
+        ;(globalThis as any).fetch = originalFetch
       }
     } catch (err) {
       appendLog(`4mica client init failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
@@ -253,10 +250,10 @@ function App() {
       setOpenTab(prev =>
         prev
           ? {
-            ...prev,
-            assetAddress: latest.assetAddress || prev.assetAddress,
-            recipientAddress: latest.toAddress || prev.recipientAddress,
-          }
+              ...prev,
+              assetAddress: latest.assetAddress || prev.assetAddress,
+              recipientAddress: latest.toAddress || prev.recipientAddress,
+            }
           : prev
       )
 
@@ -285,7 +282,8 @@ function App() {
       },
       onPaymentFailed: (chunkId: string, err: unknown, amount?: string) => {
         appendLog(
-          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${err instanceof Error ? err.message : String(err)
+          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${
+            err instanceof Error ? err.message : String(err)
           }`,
           'error'
         )
@@ -386,7 +384,18 @@ function App() {
     } finally {
       setSettlingTab(false)
     }
-  }, [openTab, coreParams, appendLog, settleAmountDisplay, buildSdkClient, ensureTabAllowance, tabDueAmount, tabReqId, refreshTabDue, settleTabLabel])
+  }, [
+    openTab,
+    coreParams,
+    appendLog,
+    settleAmountDisplay,
+    buildSdkClient,
+    ensureTabAllowance,
+    tabDueAmount,
+    tabReqId,
+    refreshTabDue,
+    settleTabLabel,
+  ])
 
   const handleDeposit = () => {
     performDeposit(depositMode, depositAmount, tokenAddress, tokenDecimals)

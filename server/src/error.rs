@@ -41,4 +41,7 @@ pub enum PaymentError {
 
     #[error("On-chain settlement failed: {0}")]
     Onchain(String),
+
+    #[error("{0}")]
+    Other(String),
 }
