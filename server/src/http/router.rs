@@ -2,7 +2,7 @@ use crate::http::{model::TabRequestParams, x402};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -57,6 +57,7 @@ async fn handle_tab(State(state): State<AppState>, Json(body): Json<TabRequestPa
 async fn handle_stream(
     State(state): State<AppState>,
     Path(filename): Path<String>,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Response {
     // Verify the file path before charging for the file
@@ -68,12 +69,23 @@ async fn handle_stream(
         }
     };
 
+    let resource = match state.config.server_advertised_url.join(&uri.to_string()) {
+        Ok(resource) => resource,
+        Err(e) => {
+            error!("Failed to construct resource URL: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to construct resource URL",
+            )
+                .into_response();
+        }
+    };
     // We don't want to charge for playlist files
     let is_playlist = filename.ends_with(".m3u8");
     if state.config.x402.enabled
         && !is_playlist
         && let Err(err) =
-            x402::handle_x402_paywall(&state, U256::from(100), filename.clone(), headers).await
+            x402::handle_x402_paywall(&state, U256::from(100), resource.to_string(), headers).await
     {
         return err;
     }
@@ -115,16 +127,28 @@ async fn handle_stream(
 async fn handle_remote_stream(
     State(state): State<AppState>,
     Query(query): Query<RemoteStreamQuery>,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Response {
     let url = query.url;
 
+    let resource = match state.config.server_advertised_url.join(&uri.to_string()) {
+        Ok(resource) => resource,
+        Err(e) => {
+            error!("Failed to construct resource URL: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to construct resource URL",
+            )
+                .into_response();
+        }
+    };
     // We don't want to charge for playlist files
     let is_playlist = url.ends_with(".m3u8");
     if state.config.x402.enabled
         && !is_playlist
         && let Err(err) =
-            x402::handle_x402_paywall(&state, U256::from(100), url.clone(), headers).await
+            x402::handle_x402_paywall(&state, U256::from(100), resource.to_string(), headers).await
     {
         return err;
     }

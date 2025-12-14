@@ -22,12 +22,12 @@ export const useClient = (
     useEffect(() => {
         let active = true
         const init = async () => {
-            // We need coreParams to know the contract address if not in config
-            // But SDK ConfigBuilder allows optional contract address if it's in env
-            // However, for the demo app, we usually get it from the public params endpoint
-
             if (!config.walletPrivateKey) {
                 setClientError('Missing VITE_WALLET_PRIVATE_KEY in environment')
+                return
+            }
+
+            if (!coreParams) {
                 return
             }
 
@@ -50,21 +50,6 @@ export const useClient = (
 
                 const cfg = builder.build()
 
-                // Bind fetch globally for the SDK if needed, though SDK usually uses passed fetch or global
-                // The SDK Client implementation in the provided files doesn't seem to take a fetch fn in constructor directly?
-                // Wait, Client.new(cfg) is static. Let's check Client.ts again.
-                // Client.new calls new Client(cfg, rpc, gateway).
-                // It seems Client.new might use default fetch.
-                // To be safe, we can try to hijack global fetch or hope it picks it up.
-                // The SDK file I read earlier: RpcProxy takes fetchFn. Client.new creates RpcProxy.
-                // Client.new implementation:
-                // static async new(cfg: Config): Promise<Client> { ... const rpc = new RpcProxy(cfg.rpcUrl, cfg.adminApiKey); ... }
-                // It uses default fetch.
-
-                // Temporarily bind custom fetch if needed for context (e.g. auth headers not relevant here)
-                // But for browser, window.fetch is fine.
-
-                // Patch global fetch to ensure it's bound to window/globalThis when SDK captures it
                 const originalFetch = globalThis.fetch
                 globalThis.fetch = originalFetch.bind(globalThis)
 
@@ -72,7 +57,6 @@ export const useClient = (
                 try {
                     newClient = await fourMica.Client.new(cfg)
                 } finally {
-                    // Restore original fetch (RpcProxy has already captured the bound version)
                     globalThis.fetch = originalFetch
                 }
                 if (active) {
@@ -93,11 +77,9 @@ export const useClient = (
 
         return () => {
             active = false
-            // client.aclose() is async, can't easily await in cleanup
-            // but strictly we should try to close if we are replacing it
             client?.aclose?.().catch(console.error)
         }
-    }, [config.walletPrivateKey, config.rpcUrl, config.rpcProxyUrl, coreParams, appendLog])
+    }, [coreParams?.contractAddress, coreParams?.ethereumHttpRpcUrl])
 
     return { client, clientLoading, clientError }
 }

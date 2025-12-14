@@ -4,8 +4,8 @@ type TransferAuthorizationParams = {
   from: string
   to: string
   value: string
-  validAfter: number
-  validBefore: number
+  validAfter: string
+  validBefore: string
   nonce: string
 }
 
@@ -103,8 +103,8 @@ const createExactPaymentHeader = async (
     from,
     to,
     value,
-    validAfter,
-    validBefore,
+    validAfter: validAfter.toString(),
+    validBefore: validBefore.toString(),
     nonce,
   }
 

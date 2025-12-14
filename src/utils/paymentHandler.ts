@@ -91,20 +91,35 @@ const parseAmountRequired = (value: unknown): bigint => {
 const resolveAssetMeta = async (
   provider: any,
   assetAddr: string
-): Promise<{ symbol: string; decimals: number } | null> => {
+): Promise<{ symbol: string; decimals: number; name: string; version: string } | null> => {
   if (!provider) return null
   if (!assetAddr || assetAddr.toLowerCase() === ZeroAddress.toLowerCase()) {
-    return { symbol: 'POL', decimals: 18 }
+    return { symbol: 'POL', decimals: 18, name: 'Polygon', version: '1' }
   }
   if (!isAddress(assetAddr)) return null
   try {
     const erc20 = new Contract(
       assetAddr,
-      ['function symbol() view returns (string)', 'function decimals() view returns (uint8)'],
+      [
+        'function symbol() view returns (string)',
+        'function decimals() view returns (uint8)',
+        'function name() view returns (string)',
+        'function version() view returns (string)',
+      ],
       provider
     )
-    const [symbol, decimals] = await Promise.all([erc20.symbol(), erc20.decimals()])
-    return { symbol: String(symbol), decimals: Number(decimals) || 18 }
+    const [symbol, decimals, name, version] = await Promise.all([
+      erc20.symbol(),
+      erc20.decimals(),
+      erc20.name().catch(() => 'USDC'),
+      erc20.version().catch(() => '2'),
+    ])
+    return {
+      symbol: String(symbol),
+      decimals: Number(decimals) || 18,
+      name: String(name),
+      version: String(version),
+    }
   } catch {
     return null
   }
@@ -398,24 +413,26 @@ export const createPaymentHandler = (
     const isDirectScheme = scheme === 'x402' || scheme === 'exact'
 
     const { flow, userAddress, signer, publicParams } = await buildFlow(getWalletSigner)
+
     const amountRaw = parseAmountRequired((requirements as any).maxAmountRequired ?? 0n)
     const assetAddr = String((requirements as any).asset ?? '')
     const payTo = String((requirements as any).payTo ?? '')
     const isDefaultAsset =
       assetAddr && config.defaultTokenAddress && assetAddr.toLowerCase() === config.defaultTokenAddress.toLowerCase()
     const explicitDecimals = Number((requirements as any)?.assetDecimals ?? (requirements as any)?.decimals)
+
     const assetMeta = signer.provider ? await resolveAssetMeta(signer.provider, assetAddr) : null
     const decimals =
       assetMeta?.decimals ??
       (Number.isFinite(explicitDecimals) && explicitDecimals > 0 ? Number(explicitDecimals) : isDefaultAsset ? 6 : 18)
     const symbol =
       assetMeta?.symbol ??
-      (requirements as any)?.assetSymbol ??
       (isDefaultAsset && !Number.isFinite(explicitDecimals)
         ? 'USDC'
         : assetAddr
         ? assetAddr.slice(0, 6) + '…' + assetAddr.slice(-4)
         : 'POL')
+
     const amountDisplay = formatAmountDisplay(amountRaw, decimals, symbol)
     onAmountReady?.(amountDisplay)
 
@@ -426,8 +443,8 @@ export const createPaymentHandler = (
         chosen: schemeInfo.chosen,
       })
       const maxTimeoutSeconds = Number((requirements as any).maxTimeoutSeconds ?? 3600)
-      const tokenName = (requirements as any).extra?.name
-      const tokenVersion = (requirements as any).extra?.version
+      const tokenName = assetMeta?.name ?? 'USDC'
+      const tokenVersion = assetMeta?.version ?? '2'
 
       const direct = await settleDirectPayment(
         signer,

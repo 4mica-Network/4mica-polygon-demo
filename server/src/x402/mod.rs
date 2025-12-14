@@ -53,17 +53,20 @@ pub fn build_accepted_payment_requirements(
     resource: Option<String>,
 ) -> Vec<PaymentRequirements> {
     let max_amount_required = format!("{:#x}", max_amount_required);
+    let description = resource
+        .as_ref()
+        .map(|r| format!("Access to resource: {}", r));
     vec![
         PaymentRequirements {
             scheme: config.scheme_4mica.clone(),
             network: config.network.clone(),
             max_amount_required: max_amount_required.clone(),
             resource: resource.clone(),
-            description: None,
-            mime_type: None,
+            description: description.clone(),
+            mime_type: Some("video/mp2t".to_string()),
             output_schema: None,
             pay_to: config.pay_to.clone(),
-            max_timeout_seconds: None,
+            max_timeout_seconds: Some(3600),
             asset: config.asset.clone(),
             extra: json!({
                 "tabEndpoint": tab_endpoint,
@@ -74,11 +77,11 @@ pub fn build_accepted_payment_requirements(
             network: config.network.clone(),
             max_amount_required,
             resource,
-            description: None,
-            mime_type: None,
+            description,
+            mime_type: Some("video/mp2t".to_string()),
             output_schema: None,
             pay_to: config.pay_to.clone(),
-            max_timeout_seconds: None,
+            max_timeout_seconds: Some(3600),
             asset: config.asset.clone(),
             extra: json!({}),
         },
