@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    env_file:
+      - .env
+    environment:
+      FILE_DIRECTORY: /app/data/hls
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 3000
+      SERVER_ADVERTISED_URL: ${SERVER_ADVERTISED_URL:-http://localhost:8080}
+    volumes:
+      - ./data:/app/data:ro
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        VITE_PLAYLIST_URL: ${VITE_PLAYLIST_URL:-http://localhost:8080/stream/big-buck-bunny.m3u8}
+        VITE_WALLET_PRIVATE_KEY: ${VITE_WALLET_PRIVATE_KEY:-}
+        VITE_STREAM_SERVER_URL: ${VITE_STREAM_SERVER_URL:-http://localhost:8080}
+        VITE_4MICA_RPC_URL: ${VITE_4MICA_RPC_URL:-https://api.4mica.xyz/}
+        VITE_DEFAULT_TOKEN_ADDRESS: ${VITE_DEFAULT_TOKEN_ADDRESS:-0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582}
+        VITE_ETH_RPC_PROXY_URL: ${VITE_ETH_RPC_PROXY_URL:-https://polygon-amoy-bor-rpc.publicnode.com}
+        VITE_ENABLE_EXTERNAL_STREAMING: ${VITE_ENABLE_EXTERNAL_STREAMING:-false}
+    depends_on:
+      - server
+    ports:
+      - "8080:80"
+    restart: unless-stopped
