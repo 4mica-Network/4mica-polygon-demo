@@ -44,7 +44,7 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any, ev
     console.log('[x402] original XHR called', { uri: options.uri })
     let chunkId: string | null = null
     let modifiedOptions: XhrUriConfig
-    if (options.uri) {
+    if (config.enableExternalStreaming && options.uri) {
       const encodedUrl = encodeURIComponent(options.uri)
       modifiedOptions = {
         ...options,
@@ -125,6 +125,7 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any, ev
         awaitingSettlement = true
         settlementNotified = false
         chunkId = `${++paymentCounter}`
+
         paymentHandler(response, options, body, amountDisplay => {
           const key = chunkId ?? `${paymentCounter}`
           chunkMeta.set(key, { amount: amountDisplay })

@@ -34,7 +34,7 @@ export const use4MicaParams = (
     return () => {
       active = false
     }
-  }, [isConnected, appendLog])
+  }, [isConnected])
 
   return { coreParams, paramsLoading }
 }

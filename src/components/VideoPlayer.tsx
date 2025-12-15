@@ -17,6 +17,52 @@ interface VideoPlayerProps {
   paymentEvents?: PaymentEvents
 }
 
+// Target ~1 segment ahead.
+const SINGLE_SEGMENT_SECONDS = 3
+
+// --- GLOBAL VHS CONFIG (must run before any player is created) ---
+
+// Video.js 7/8 expose VHS as videojs.Vhs (older builds might use videojs.Hls)
+const Vhs = (videojs as any).Vhs || (videojs as any).Hls
+
+if (Vhs) {
+  Vhs.GOAL_BUFFER_LENGTH = SINGLE_SEGMENT_SECONDS
+  Vhs.MAX_GOAL_BUFFER_LENGTH = SINGLE_SEGMENT_SECONDS
+  Vhs.GOAL_BUFFER_LENGTH_RATE = 0
+
+  Vhs.BUFFER_LOW_WATER_LINE = 0
+  Vhs.BUFFER_LOW_WATER_LINE_RATE = 0
+  Vhs.MAX_BUFFER_LOW_WATER_LINE = SINGLE_SEGMENT_SECONDS
+
+  Vhs.BUFFER_HIGH_WATER_LINE = SINGLE_SEGMENT_SECONDS
+}
+
+// Optional: extra enforcement via internal controller/loaders.
+// Not strictly required once the global config is set, but harmless.
+const enforceSingleSegmentBuffering = (player?: Player | null) => {
+  if (!player?.tech) return
+
+  const tech = player.tech({ IWillNotUseThisInPlugins: true } as any)
+  const vhs = (tech as any)?.vhs
+  const controller = vhs?.masterPlaylistController_
+
+  if (!controller) return
+
+  const goal = () => SINGLE_SEGMENT_SECONDS
+
+  controller.goalBufferLength = goal
+  controller.bufferLowWaterLine = goal
+
+  const setLoaderGoal = (loader?: any) => {
+    if (loader) {
+      loader.goalBufferLength_ = goal
+    }
+  }
+
+  setLoaderGoal(controller.mainSegmentLoader_)
+  setLoaderGoal(controller.audioSegmentLoader_)
+}
+
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, onReady, paymentHandler, paymentEvents }) => {
   const videoRef = useRef<HTMLDivElement>(null)
   const playerRef = useRef<Player | null>(null)
@@ -69,6 +115,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, onReady, paymentHandler,
       })
 
       player.on('xhr-hooks-ready', () => {
+        enforceSingleSegmentBuffering(player)
         setupXhrOverride(paymentHandlerProxy, player, paymentEventsProxy)
       })
 

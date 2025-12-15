@@ -17,7 +17,7 @@ import {
   type SchemeResolvedInfo,
   type PaymentTabInfo,
 } from './utils/paymentHandler'
-import { useActivityLog, useWalletBalance, useCollateral, use4MicaParams, useDeposit } from './hooks'
+import { useActivityLog, useWalletBalance, useCollateral, use4MicaParams, useDeposit, useClient } from './hooks'
 
 type OpenTabState = {
   tabId: bigint
@@ -33,8 +33,6 @@ const formatTabId = (tabId: bigint) => {
   const hex = tabIdToHex(tabId)
   return hex.length > 20 ? `${hex.slice(0, 10)}…${hex.slice(-6)}` : hex
 }
-
-
 
 function App() {
   const {
@@ -65,6 +63,7 @@ function App() {
 
   const { logs, appendLog } = useActivityLog()
   const { coreParams, paramsLoading } = use4MicaParams(isConnected, appendLog)
+  const { client: sdkClient } = useClient(appendLog)
 
   const trackedTokens = useMemo(() => {
     const tokens = new Set<string>()
@@ -82,13 +81,7 @@ function App() {
     appendLog
   )
 
-  const { collateral, collateralLoading, fetchCollateral } = useCollateral(
-    signer,
-    address,
-    isConnected,
-    coreParams,
-    appendLog
-  )
+  const { collateral, collateralLoading, fetchCollateral } = useCollateral(isConnected, appendLog)
 
   const { depositLoading, handleDeposit: performDeposit } = useDeposit(
     signer,
@@ -138,7 +131,8 @@ function App() {
       if (usedFallback && chosen.toLowerCase() !== preferred.toLowerCase()) {
         const offeredList = offered.filter(Boolean).join(', ')
         appendLog(
-          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${offeredList ? ` (offered: ${offeredList})` : ''
+          `Payment rail ${preferred} unavailable; using ${chosen || 'fallback'}${
+            offeredList ? ` (offered: ${offeredList})` : ''
           }.`,
           'warn'
         )
@@ -148,7 +142,7 @@ function App() {
   )
 
   const handleTabObserved = useCallback((tab: PaymentTabInfo) => {
-    setOpenTab(prev => {
+    setOpenTab(() => {
       return {
         tabId: tab.tabId,
         assetAddress: tab.assetAddress,
@@ -182,52 +176,11 @@ function App() {
 
   const settleTabLabel = useMemo(() => (openTab ? formatTabId(openTab.tabId) : ''), [openTab])
 
-  const buildSdkClient = useCallback(async () => {
-    if (!config.walletPrivateKey) {
-      appendLog('Tab settlement requires VITE_WALLET_PRIVATE_KEY to be set.', 'error')
-      return null
-    }
-
-    try {
-      const builder = new fourMica.ConfigBuilder()
-        .walletPrivateKey(config.walletPrivateKey)
-        .rpcUrl(config.rpcUrl)
-
-      const proxyRpc = config.rpcProxyUrl || coreParams?.ethereumHttpRpcUrl
-      if (proxyRpc) {
-        builder.ethereumHttpRpcUrl(proxyRpc)
-      }
-      if (coreParams?.contractAddress) {
-        builder.contractAddress(coreParams.contractAddress)
-      }
-
-      const cfg = builder.build()
-
-      const originalFetch = globalThis.fetch
-      const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
-        const f = originalFetch as any
-        return f.call(globalThis, input, init)
-      }
-
-        ; (globalThis as any).fetch = boundFetch
-      try {
-        return await fourMica.Client.new(cfg)
-      } finally {
-        ; (globalThis as any).fetch = originalFetch
-      }
-    } catch (err) {
-      appendLog(`4mica client init failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
-      return null
-    }
-  }, [coreParams, appendLog])
-
   const refreshTabDue = useCallback(async () => {
-    if (!openTab) return null
-    const client = await buildSdkClient()
-    if (!client) return null
+    if (!openTab || !sdkClient) return null
 
     try {
-      const guarantees = await client.recipient.getTabGuarantees(openTab.tabId)
+      const guarantees = await sdkClient.recipient.getTabGuarantees(openTab.tabId)
       if (!guarantees.length) {
         appendLog(`No guarantee found for tab #${tabIdToHex(openTab.tabId)}.`, 'warn')
         setTabReqId(null)
@@ -237,11 +190,10 @@ function App() {
         return null
       }
 
-      // Compute total from guarantees: sum all guarantee amounts as requested.
       const totalAmount = guarantees.reduce((acc, g) => acc + g.amount, 0n)
 
       const latest = guarantees[guarantees.length - 1]
-      const status = await client.user.getTabPaymentStatus(openTab.tabId)
+      const status = await sdkClient.user.getTabPaymentStatus(openTab.tabId)
       const paid = status?.paid ?? 0n
       const due = totalAmount > paid ? totalAmount - paid : 0n
 
@@ -253,10 +205,10 @@ function App() {
       setOpenTab(prev =>
         prev
           ? {
-            ...prev,
-            assetAddress: latest.assetAddress || prev.assetAddress,
-            recipientAddress: latest.toAddress || prev.recipientAddress,
-          }
+              ...prev,
+              assetAddress: latest.assetAddress || prev.assetAddress,
+              recipientAddress: latest.toAddress || prev.recipientAddress,
+            }
           : prev
       )
 
@@ -268,10 +220,8 @@ function App() {
       setTabDueDisplay('')
       setTabTotalDisplay('')
       return null
-    } finally {
-      await client.aclose?.()
     }
-  }, [openTab, buildSdkClient, appendLog])
+  }, [openTab, sdkClient])
 
   const paymentEvents = useMemo(
     () => ({
@@ -285,14 +235,15 @@ function App() {
       },
       onPaymentFailed: (chunkId: string, err: unknown, amount?: string) => {
         appendLog(
-          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${err instanceof Error ? err.message : String(err)
+          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${
+            err instanceof Error ? err.message : String(err)
           }`,
           'error'
         )
         void refreshTabDue()
       },
     }),
-    [appendLog, refreshTabDue]
+    [refreshTabDue]
   )
 
   const ensureTabAllowance = useCallback(
@@ -332,11 +283,11 @@ function App() {
         throw err
       }
     },
-    [openTab, appendLog]
+    [openTab]
   )
 
   const handleSettleTab = useCallback(async () => {
-    if (!openTab) return
+    if (!openTab || !sdkClient) return
     if (!coreParams) {
       appendLog('Missing 4mica contract parameters; try again in a moment.', 'error')
       return
@@ -355,17 +306,10 @@ function App() {
         return
       }
 
-      const client = await buildSdkClient()
-      if (!client) {
-        setSettlingTab(false)
-        setShowSettlePrompt(true)
-        return
-      }
-
-      await ensureTabAllowance(client, due)
+      await ensureTabAllowance(sdkClient, due)
       appendLog(`Settling 4mica tab #${settleTabLabel} for ${settleAmountDisplay || 'the outstanding amount'}…`)
 
-      const receipt: any = await client.user.payTab(
+      const receipt: any = await sdkClient.user.payTab(
         openTab.tabId,
         reqId,
         due,
@@ -380,13 +324,23 @@ function App() {
       setTabDueDisplay('')
       setTabTotalDisplay('')
       setShowSettlePrompt(false)
-      await client.aclose?.()
     } catch (err) {
       appendLog(`Tab settlement failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
       setSettlingTab(false)
     }
-  }, [openTab, coreParams, appendLog, settleAmountDisplay, buildSdkClient, ensureTabAllowance, tabDueAmount, tabReqId, refreshTabDue, settleTabLabel])
+  }, [
+    openTab,
+    sdkClient,
+    coreParams,
+    appendLog,
+    settleAmountDisplay,
+    ensureTabAllowance,
+    tabDueAmount,
+    tabReqId,
+    refreshTabDue,
+    settleTabLabel,
+  ])
 
   const handleDeposit = () => {
     performDeposit(depositMode, depositAmount, tokenAddress, tokenDecimals)
@@ -405,10 +359,10 @@ function App() {
   }, [isConnected])
 
   useEffect(() => {
-    if (openTab) {
+    if (openTab && sdkClient) {
       refreshTabDue()
     }
-  }, [openTab, refreshTabDue])
+  }, [openTab?.tabId, sdkClient])
 
   useEffect(() => {
     if (!openTab || !tabDueAmount || tabDueAmount <= 0n) return
