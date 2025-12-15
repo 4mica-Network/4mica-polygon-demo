@@ -18,6 +18,21 @@ type WalletContextValue = {
 const WalletContext = createContext<WalletContextValue | undefined>(undefined)
 
 const TARGET_CHAIN_ID = 80002
+const CONNECT_TIMEOUT_MS = 10_000
+
+const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+    promise
+      .then(value => {
+        clearTimeout(timer)
+        resolve(value)
+      })
+      .catch(error => {
+        clearTimeout(timer)
+        reject(error)
+      })
+  })
 
 const initialState: {
   address: string | null
@@ -57,9 +72,13 @@ export const WalletProvider: React.FC<React.PropsWithChildren> = ({ children }) 
   }, [])
 
   const connect = useCallback(async () => {
-    setState(prev => ({ ...prev, isConnecting: true, error: null }))
+    setState(prev => ({ ...prev, isConnecting: true, hasTriedEager: true, error: null }))
     try {
-      const { signer, address, chainId } = await buildEnvSigner()
+      const { signer, address, chainId } = await withTimeout(
+        buildEnvSigner(),
+        CONNECT_TIMEOUT_MS,
+        'Wallet initialization timed out. Check RPC connectivity.'
+      )
       setState({
         address,
         chainId,
@@ -76,7 +95,11 @@ export const WalletProvider: React.FC<React.PropsWithChildren> = ({ children }) 
 
   const switchToTargetChain = useCallback(async (): Promise<boolean> => {
     try {
-      const { signer, address, chainId } = await buildEnvSigner()
+      const { signer, address, chainId } = await withTimeout(
+        buildEnvSigner(),
+        CONNECT_TIMEOUT_MS,
+        'Refreshing RPC connection timed out. Check RPC connectivity.'
+      )
       if (chainId !== TARGET_CHAIN_ID) {
         setState(prev => ({
           ...prev,
