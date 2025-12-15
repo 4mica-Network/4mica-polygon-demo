@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { formatUnits, ZeroAddress } from 'ethers'
-import * as fourMica from 'sdk-4mica'
+import { useCallback, useMemo, useState } from 'react'
 import type Player from 'video.js/dist/types/player'
 import VideoPlayer from './components/VideoPlayer'
 import BootstrapLoader from './components/BootstrapLoader'
-import ConnectScreen from './components/ConnectScreen'
 import WalletSidebar from './components/WalletSidebar'
 import ActivityLog from './components/ActivityLog'
 import NetworkSwitchBanner from './components/NetworkSwitchBanner'
-import TabSettlementPrompt from './components/TabSettlementPrompt'
 import { config } from './config/env'
 import { TARGET_CHAIN_ID, useWallet } from './context/WalletContext'
 import {
@@ -17,15 +13,7 @@ import {
   type SchemeResolvedInfo,
   type PaymentTabInfo,
 } from './utils/paymentHandler'
-import { useActivityLog, useWalletBalance, useCollateral, use4MicaParams, useDeposit, useClient } from './hooks'
-
-type OpenTabState = {
-  tabId: bigint
-  assetAddress: string
-  recipientAddress: string
-  decimals: number
-  symbol: string
-}
+import { useActivityLog, useWalletBalance, useCollateral } from './hooks'
 
 const tabIdToHex = (tabId: bigint) => `0x${tabId.toString(16)}`
 
@@ -43,36 +31,21 @@ function App() {
     error,
     isConnected,
     connect,
-    disconnect,
     signer,
     switchToTargetChain,
   } = useWallet()
 
-  const [depositAmount, setDepositAmount] = useState('10')
-  const [depositMode, setDepositMode] = useState<'default' | 'custom'>('default')
-  const [tokenAddress, setTokenAddress] = useState('')
-  const [tokenDecimals, setTokenDecimals] = useState('18')
   const [paymentScheme, setPaymentScheme] = useState<PaymentScheme>('4mica-credit')
-  const [openTab, setOpenTab] = useState<OpenTabState | null>(null)
-  const [tabReqId, setTabReqId] = useState<bigint | null>(null)
-  const [tabDueAmount, setTabDueAmount] = useState<bigint | null>(null)
-  const [tabDueDisplay, setTabDueDisplay] = useState('')
-  const [tabTotalDisplay, setTabTotalDisplay] = useState('')
-  const [showSettlePrompt, setShowSettlePrompt] = useState(false)
-  const [settlingTab, setSettlingTab] = useState(false)
 
   const { logs, appendLog } = useActivityLog()
-  const { coreParams, paramsLoading } = use4MicaParams(isConnected, appendLog)
-  const { client: sdkClient } = useClient(appendLog)
 
   const trackedTokens = useMemo(() => {
     const tokens = new Set<string>()
     if (config.defaultTokenAddress) tokens.add(config.defaultTokenAddress.toLowerCase())
-    if (depositMode === 'custom' && tokenAddress) tokens.add(tokenAddress.toLowerCase())
     return Array.from(tokens)
-  }, [depositMode, tokenAddress])
+  }, [])
 
-  const { balance, balanceLoading, tokenBalances, fetchBalance } = useWalletBalance(
+  const { balance, balanceLoading, tokenBalances } = useWalletBalance(
     signer,
     address,
     isConnected,
@@ -81,20 +54,7 @@ function App() {
     appendLog
   )
 
-  const { collateral, collateralLoading, fetchCollateral } = useCollateral(isConnected, appendLog)
-
-  const { depositLoading, handleDeposit: performDeposit } = useDeposit(
-    signer,
-    address,
-    chainId,
-    paymentScheme,
-    coreParams,
-    appendLog,
-    () => {
-      fetchBalance()
-      fetchCollateral()
-    }
-  )
+  const { collateral, collateralLoading } = useCollateral(isConnected, address, appendLog)
 
   const handleConnect = async () => {
     try {
@@ -141,21 +101,12 @@ function App() {
     [appendLog]
   )
 
-  const handleTabObserved = useCallback((tab: PaymentTabInfo) => {
-    setOpenTab(() => {
-      return {
-        tabId: tab.tabId,
-        assetAddress: tab.assetAddress,
-        recipientAddress: tab.recipientAddress,
-        decimals: tab.decimals,
-        symbol: tab.symbol,
-      }
-    })
-    setTabReqId(null)
-    setTabDueAmount(null)
-    setTabDueDisplay('')
-    setTabTotalDisplay('')
-  }, [])
+  const handleTabObserved = useCallback(
+    (tab: PaymentTabInfo) => {
+      appendLog(`Opened 4mica tab #${formatTabId(tab.tabId)} for ${tab.amountDisplay}`, 'info')
+    },
+    [appendLog]
+  )
 
   const getSigner = useCallback(async () => signer, [signer])
 
@@ -164,74 +115,13 @@ function App() {
     [getSigner, getPreferredScheme, handleSchemeResolved, handleTabObserved]
   )
 
-  const tabAmountDisplay = useMemo(
-    () => tabTotalDisplay || (openTab ? `${openTab.symbol} due` : ''),
-    [openTab, tabTotalDisplay]
-  )
-
-  const settleAmountDisplay = useMemo(
-    () => tabDueDisplay || (openTab ? `${openTab.symbol} due` : ''),
-    [openTab, tabDueDisplay]
-  )
-
-  const settleTabLabel = useMemo(() => (openTab ? formatTabId(openTab.tabId) : ''), [openTab])
-
-  const refreshTabDue = useCallback(async () => {
-    if (!openTab || !sdkClient) return null
-
-    try {
-      const guarantees = await sdkClient.recipient.getTabGuarantees(openTab.tabId)
-      if (!guarantees.length) {
-        appendLog(`No guarantee found for tab #${tabIdToHex(openTab.tabId)}.`, 'warn')
-        setTabReqId(null)
-        setTabDueAmount(null)
-        setTabDueDisplay('')
-        setTabTotalDisplay('')
-        return null
-      }
-
-      const totalAmount = guarantees.reduce((acc, g) => acc + g.amount, 0n)
-
-      const latest = guarantees[guarantees.length - 1]
-      const status = await sdkClient.user.getTabPaymentStatus(openTab.tabId)
-      const paid = status?.paid ?? 0n
-      const due = totalAmount > paid ? totalAmount - paid : 0n
-
-      setTabReqId(latest.reqId)
-      setTabDueAmount(due)
-      setTabDueDisplay(`${formatUnits(due, openTab.decimals)} ${openTab.symbol}`)
-      setTabTotalDisplay(`${formatUnits(totalAmount, openTab.decimals)} ${openTab.symbol}`)
-
-      setOpenTab(prev =>
-        prev
-          ? {
-              ...prev,
-              assetAddress: latest.assetAddress || prev.assetAddress,
-              recipientAddress: latest.toAddress || prev.recipientAddress,
-            }
-          : prev
-      )
-
-      return { due, reqId: latest.reqId }
-    } catch (err) {
-      appendLog(`Failed to fetch tab balance: ${err instanceof Error ? err.message : String(err)}`, 'error')
-      setTabReqId(null)
-      setTabDueAmount(null)
-      setTabDueDisplay('')
-      setTabTotalDisplay('')
-      return null
-    }
-  }, [openTab, sdkClient])
-
   const paymentEvents = useMemo(
     () => ({
       onPaymentRequested: (chunkId: string, amount?: string) => {
         appendLog(`#${chunkId} ${amount ? `${amount}` : ''}`, 'warn')
-        void refreshTabDue()
       },
       onPaymentSettled: (chunkId: string, amount?: string, txHash?: string) => {
         appendLog(`#${chunkId} ${amount ? `${amount}` : 'Settled'}`, 'success', txHash)
-        void refreshTabDue()
       },
       onPaymentFailed: (chunkId: string, err: unknown, amount?: string) => {
         appendLog(
@@ -240,140 +130,10 @@ function App() {
           }`,
           'error'
         )
-        void refreshTabDue()
       },
     }),
-    [refreshTabDue]
+    [appendLog]
   )
-
-  const ensureTabAllowance = useCallback(
-    async (client: fourMica.Client, amount: bigint) => {
-      if (!openTab) return
-      if (openTab.assetAddress.toLowerCase() === ZeroAddress.toLowerCase()) {
-        appendLog('Native-asset tabs are not supported for quick settlement in this demo.', 'warn')
-        throw new Error('native-asset-tab')
-      }
-
-      if (amount <= 0n) {
-        appendLog('No outstanding allowance needed for this tab.', 'info')
-        return
-      }
-      const amountLabel = amount > 0n ? `${formatUnits(amount, openTab.decimals)} ${openTab.symbol}` : ''
-
-      try {
-        await client.user.approveErc20(openTab.assetAddress, amount)
-        appendLog(`Approval ready for ${amountLabel}`)
-        return
-      } catch (err) {
-        appendLog(
-          `Approval failed (will retry with reset): ${err instanceof Error ? err.message : String(err)}`,
-          'warn'
-        )
-      }
-
-      try {
-        await client.user.approveErc20(openTab.assetAddress, 0n)
-        await client.user.approveErc20(openTab.assetAddress, amount)
-        appendLog(`Approval refreshed for ${amountLabel || 'tab amount'}`)
-      } catch (err) {
-        appendLog(
-          `Approval retry failed: ${err instanceof Error ? err.message : String(err)}. Approve manually then retry.`,
-          'error'
-        )
-        throw err
-      }
-    },
-    [openTab]
-  )
-
-  const handleSettleTab = useCallback(async () => {
-    if (!openTab || !sdkClient) return
-    if (!coreParams) {
-      appendLog('Missing 4mica contract parameters; try again in a moment.', 'error')
-      return
-    }
-
-    setSettlingTab(true)
-    try {
-      const dueInfo = (await refreshTabDue()) ?? null
-      const due = dueInfo?.due ?? tabDueAmount ?? 0n
-      const reqId = dueInfo?.reqId ?? tabReqId
-
-      if (!reqId || due <= 0n) {
-        appendLog('No outstanding balance to settle.', 'info')
-        setOpenTab(null)
-        setShowSettlePrompt(false)
-        return
-      }
-
-      await ensureTabAllowance(sdkClient, due)
-      appendLog(`Settling 4mica tab #${settleTabLabel} for ${settleAmountDisplay || 'the outstanding amount'}…`)
-
-      const receipt: any = await sdkClient.user.payTab(
-        openTab.tabId,
-        reqId,
-        due,
-        openTab.recipientAddress,
-        openTab.assetAddress
-      )
-      const txHash = receipt?.transactionHash || receipt?.hash || undefined
-      appendLog(`Tab #${tabIdToHex(openTab.tabId)} settled.`, 'success', txHash)
-      setOpenTab(null)
-      setTabReqId(null)
-      setTabDueAmount(null)
-      setTabDueDisplay('')
-      setTabTotalDisplay('')
-      setShowSettlePrompt(false)
-    } catch (err) {
-      appendLog(`Tab settlement failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
-    } finally {
-      setSettlingTab(false)
-    }
-  }, [
-    openTab,
-    sdkClient,
-    coreParams,
-    appendLog,
-    settleAmountDisplay,
-    ensureTabAllowance,
-    tabDueAmount,
-    tabReqId,
-    refreshTabDue,
-    settleTabLabel,
-  ])
-
-  const handleDeposit = () => {
-    performDeposit(depositMode, depositAmount, tokenAddress, tokenDecimals)
-  }
-
-  useEffect(() => {
-    if (!isConnected) {
-      setOpenTab(null)
-      setTabReqId(null)
-      setTabDueAmount(null)
-      setTabDueDisplay('')
-      setTabTotalDisplay('')
-      setShowSettlePrompt(false)
-      setSettlingTab(false)
-    }
-  }, [isConnected])
-
-  useEffect(() => {
-    if (openTab && sdkClient) {
-      refreshTabDue()
-    }
-  }, [openTab?.tabId, sdkClient])
-
-  useEffect(() => {
-    if (!openTab || !tabDueAmount || tabDueAmount <= 0n) return
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      setShowSettlePrompt(true)
-      event.preventDefault()
-      event.returnValue = ''
-    }
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [openTab, tabDueAmount])
 
   const onWrongChain = chainId !== null && chainId !== TARGET_CHAIN_ID
   const defaultTokenAddress = config.defaultTokenAddress
@@ -381,6 +141,8 @@ function App() {
     collateral.find(c => defaultTokenAddress && c.asset.toLowerCase() === defaultTokenAddress.toLowerCase()) ??
     collateral[0] ??
     null
+
+  const hasEnvKey = useMemo(() => Boolean(config.walletPrivateKey?.trim()), [])
 
   if (!hasTriedEager) {
     return <BootstrapLoader />
@@ -395,7 +157,8 @@ function App() {
         <div className='mb-6'>
           <h1 className='text-2xl font-light text-gray-100 tracking-wide'>Polygon streaming access</h1>
           <p className='text-gray-400 text-sm mt-2 leading-relaxed'>
-            Use your wallet to enter the live demo; signatures stay automatic while you watch.
+            Video is served by decentralized operators who get paid for each chunk delivered. Payments run through either
+            x402 (direct on-chain) or a 4mica line of credit—swap between them to see the effect.
           </p>
         </div>
 
@@ -434,46 +197,71 @@ function App() {
               collateralLoading={collateralLoading}
               primaryCollateral={primaryCollateral}
               paymentScheme={paymentScheme}
-              depositMode={depositMode}
-              depositAmount={depositAmount}
-              tokenAddress={tokenAddress}
-              tokenDecimals={tokenDecimals}
-              defaultTokenAddress={defaultTokenAddress}
-              depositLoading={depositLoading}
-              paramsLoading={paramsLoading}
-              openTab={openTab}
-              tabLabel={settleTabLabel}
-              tabAmountLabel={tabAmountDisplay}
-              settlingTab={settlingTab}
               onWrongChain={onWrongChain}
               onCopyAddress={copyAddress}
               onSchemeChange={setPaymentScheme}
-              onDepositModeChange={setDepositMode}
-              onDepositAmountChange={setDepositAmount}
-              onTokenAddressChange={setTokenAddress}
-              onTokenDecimalsChange={setTokenDecimals}
-              onDeposit={handleDeposit}
               onSwitchNetwork={switchToTargetChain}
-              onDisconnect={disconnect}
-              onSettleTab={handleSettleTab}
-              onShowSettlePrompt={() => setShowSettlePrompt(true)}
             />
           </div>
         ) : (
-          <ConnectScreen isConnecting={isConnecting} error={error} onConnect={handleConnect} />
+          <div className='bg-gray-900 border border-gray-700 rounded-2xl p-8 shadow-2xl space-y-6'>
+            <div className='flex items-start justify-between gap-4 flex-wrap'>
+              <div>
+                <div className='inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-800 border border-gray-600 text-xs uppercase tracking-wider text-indigo-200'>
+                  <span className='h-2 w-2 rounded-full bg-emerald-400 animate-pulse' />
+                  Headless wallet mode
+                </div>
+                <div className='text-white text-xl font-semibold mt-3'>Load the configured payment key</div>
+                <p className='text-gray-300 text-sm leading-relaxed mt-2 max-w-2xl'>
+                  The player now reads VITE_WALLET_PRIVATE_KEY from your environment and uses it for SDK calls and
+                  per-segment payments. No browser wallet login is needed.
+                </p>
+              </div>
+              <div className='px-3 py-1.5 rounded-full text-xs bg-gray-800 border border-gray-600 text-gray-200'>
+                {isConnecting ? 'Loading key…' : hasEnvKey ? 'Ready' : 'Key missing'}
+              </div>
+            </div>
+
+            <div className='grid md:grid-cols-2 gap-4'>
+              <div className='rounded-xl border border-gray-800 bg-gray-800 p-5 space-y-3'>
+                <div className='text-gray-200 font-semibold'>Environment checks</div>
+                <div className='text-sm text-gray-300 flex items-center justify-between'>
+                  <span>Private key</span>
+                  <span className={hasEnvKey ? 'text-emerald-300' : 'text-red-300'}>
+                    {hasEnvKey ? 'Detected' : 'Missing'}
+                  </span>
+                </div>
+                <div className='text-sm text-gray-300 flex items-center justify-between'>
+                  <span>RPC</span>
+                  <span className='text-gray-100 break-all'>{config.rpcProxyUrl}</span>
+                </div>
+                {error && <div className='text-sm text-red-300 mt-2'>{error}</div>}
+                {!hasEnvKey && (
+                  <div className='text-xs text-amber-200 mt-2'>
+                    Add VITE_WALLET_PRIVATE_KEY to your .env and restart the client.
+                  </div>
+                )}
+              </div>
+
+              <div className='rounded-xl border border-gray-800 bg-gray-800 p-5 space-y-3'>
+                <div className='text-gray-200 font-semibold'>Retry</div>
+                <p className='text-sm text-gray-300'>
+                  We automatically attempt to load the configured key on startup. If you just updated your env file, use
+                  the button below to try again.
+                </p>
+                <button
+                  onClick={handleConnect}
+                  disabled={isConnecting || !hasEnvKey}
+                  className='w-full px-4 py-3 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-500 transition disabled:opacity-60 cursor-pointer'
+                >
+                  {isConnecting ? 'Loading key…' : 'Retry private key load'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
-      {openTab && (
-        <TabSettlementPrompt
-          tabLabel={settleTabLabel}
-          amountLabel={settleAmountDisplay || `${openTab.symbol} balance`}
-          visible={showSettlePrompt}
-          settling={settlingTab}
-          onSettle={handleSettleTab}
-          onDismiss={() => setShowSettlePrompt(false)}
-        />
-      )}
     </div>
   )
 }

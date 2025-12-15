@@ -6,11 +6,13 @@ export interface CollateralItem {
   symbol: string
   decimals: number
   collateral: string
+  locked: string
   withdrawalRequested: string
 }
 
 export const useCollateral = (
   isConnected: boolean,
+  address: string | null,
   appendLog: (entry: string, tone?: 'info' | 'warn' | 'success' | 'error') => void
 ) => {
   const { client, clientLoading } = useClient(appendLog)
@@ -20,6 +22,10 @@ export const useCollateral = (
   const fetchCollateral = useCallback(async () => {
     if (!client) {
       if (isConnected) appendLog('SDK client not ready yet.', 'warn')
+      return
+    }
+    if (!address) {
+      setCollateral([])
       return
     }
 
@@ -64,11 +70,26 @@ export const useCollateral = (
           }
 
           const { formatUnits } = await import('ethers')
+
+          let lockedRaw: bigint = 0n
+          let totalRaw: bigint | null = null
+          try {
+            const balanceInfo = await (client as any).recipient.getUserAssetBalance(address, assetAddr)
+            lockedRaw = balanceInfo?.locked ?? 0n
+            totalRaw = balanceInfo?.total ?? null
+          } catch (err) {
+            appendLog(
+              `Locked collateral fetch failed for ${assetAddr}: ${err instanceof Error ? err.message : String(err)}`,
+              'error'
+            )
+          }
+
           return {
             asset: assetAddr,
             symbol,
             decimals,
-            collateral: formatUnits(item.collateral, decimals),
+            collateral: formatUnits(totalRaw ?? item.collateral, decimals),
+            locked: formatUnits(lockedRaw, decimals),
             withdrawalRequested: formatUnits(item.withdrawalRequestAmount, decimals),
           }
         })
@@ -80,7 +101,7 @@ export const useCollateral = (
     } finally {
       setCollateralLoading(false)
     }
-  }, [client, appendLog, isConnected])
+  }, [client, appendLog, isConnected, address])
 
   useEffect(() => {
     if (isConnected && client) {
@@ -88,7 +109,7 @@ export const useCollateral = (
     } else {
       setCollateral([])
     }
-  }, [isConnected, client])
+  }, [isConnected, client, address])
 
   useEffect(() => {
     if (!isConnected || !client) return
@@ -96,7 +117,7 @@ export const useCollateral = (
       fetchCollateral()
     }, 10000)
     return () => clearInterval(id)
-  }, [isConnected, client])
+  }, [isConnected, client, fetchCollateral])
 
   return { collateral, collateralLoading: collateralLoading || clientLoading, fetchCollateral }
 }

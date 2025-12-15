@@ -1,6 +1,5 @@
 import { useCallback, useState } from 'react'
-import { formatUnits, isAddress, parseUnits } from 'ethers'
-import type { JsonRpcSigner } from 'ethers'
+import { formatUnits, isAddress, parseUnits, type Signer } from 'ethers'
 import * as fourMica from 'sdk-4mica'
 import { TARGET_CHAIN_ID } from '../context/WalletContext'
 import { config } from '../config/env'
@@ -8,7 +7,7 @@ import type { PaymentScheme } from '../utils/paymentHandler'
 import { useClient } from './useClient'
 
 export const useDeposit = (
-  signer: JsonRpcSigner | null,
+  signer: Signer | null,
   address: string | null,
   chainId: number | null,
   paymentScheme: PaymentScheme,
