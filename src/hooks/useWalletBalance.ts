@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Contract, formatEther, formatUnits } from 'ethers'
-import type { JsonRpcSigner } from 'ethers'
+import { Contract, formatEther, formatUnits, type Signer } from 'ethers'
 
 interface TokenBalance {
   address: string
@@ -10,7 +9,7 @@ interface TokenBalance {
 }
 
 export const useWalletBalance = (
-  signer: JsonRpcSigner | null,
+  signer: Signer | null,
   address: string | null,
   isConnected: boolean,
   chainId: number | null,

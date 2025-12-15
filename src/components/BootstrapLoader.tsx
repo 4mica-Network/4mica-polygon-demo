@@ -6,13 +6,13 @@ const BootstrapLoader = () => {
       <div className='w-full max-w-3xl mx-auto text-center space-y-6 px-4'>
         <div className='inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-gray-800 border border-gray-600 text-xs uppercase tracking-wider text-indigo-200'>
           <span className='h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse' />
-          Restoring wallet session
+          Loading payment key
         </div>
         <div className='text-2xl md:text-3xl text-white font-semibold leading-relaxed'>
-          Checking for an existing connection…
+          Preparing configured wallet…
         </div>
         <div className='text-gray-400 text-sm leading-relaxed max-w-lg mx-auto'>
-          If you previously approved this site, your wallet will reconnect automatically.
+          Reading the private key and RPC endpoint from the environment before starting the stream.
         </div>
       </div>
     </div>
