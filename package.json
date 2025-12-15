@@ -14,7 +14,7 @@
     "ethers": "^6.11.1",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "sdk-4mica": "^0.2.1",
+    "sdk-4mica": "file:vendor/sdk-4mica",
     "video.js": "^8.23.4",
     "xhr": "^2.6.0"
   },

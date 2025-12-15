@@ -48,3 +48,7 @@ yarn dev
 To stream a different video, update `VITE_PLAYLIST_URL` in your `.env` file with any HLS playlist address.
 
 **Note:** If you want to stream a video that is not located in the server's `FILE_DIRECTORY` path (configured in the server), you must set `VITE_ENABLE_EXTERNAL_STREAMING=true` in your `.env` file to enable streaming from external sources.
+
+## Docker Deployment
+
+To run the client and server behind nginx with Docker Compose, see `DEPLOYMENT.md`.

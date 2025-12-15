@@ -7,20 +7,8 @@ import ActivityLog from './components/ActivityLog'
 import NetworkSwitchBanner from './components/NetworkSwitchBanner'
 import { config } from './config/env'
 import { TARGET_CHAIN_ID, useWallet } from './context/WalletContext'
-import {
-  createPaymentHandler,
-  type PaymentScheme,
-  type SchemeResolvedInfo,
-  type PaymentTabInfo,
-} from './utils/paymentHandler'
+import { createPaymentHandler, type PaymentScheme, type SchemeResolvedInfo, type PaymentTabInfo } from './utils/paymentHandler'
 import { useActivityLog, useWalletBalance, useCollateral } from './hooks'
-
-const tabIdToHex = (tabId: bigint) => `0x${tabId.toString(16)}`
-
-const formatTabId = (tabId: bigint) => {
-  const hex = tabIdToHex(tabId)
-  return hex.length > 20 ? `${hex.slice(0, 10)}…${hex.slice(-6)}` : hex
-}
 
 function App() {
   const {
@@ -102,10 +90,8 @@ function App() {
   )
 
   const handleTabObserved = useCallback(
-    (tab: PaymentTabInfo) => {
-      appendLog(`Opened 4mica tab #${formatTabId(tab.tabId)} for ${tab.amountDisplay}`, 'info')
-    },
-    [appendLog]
+    (_tab: PaymentTabInfo) => {},
+    []
   )
 
   const getSigner = useCallback(async () => signer, [signer])
