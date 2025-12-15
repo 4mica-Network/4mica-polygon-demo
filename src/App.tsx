@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { formatUnits, ZeroAddress } from 'ethers'
-import * as fourMica from 'sdk-4mica'
+import { formatUnits, ZeroAddress, isAddress } from 'ethers'
 import type Player from 'video.js/dist/types/player'
 import VideoPlayer from './components/VideoPlayer'
 import BootstrapLoader from './components/BootstrapLoader'
@@ -17,6 +16,7 @@ import {
   type SchemeResolvedInfo,
   type PaymentTabInfo,
 } from './utils/paymentHandler'
+import { getCoreContract, getErc20Contract } from './utils/fourMicaContract'
 import { useActivityLog, useWalletBalance, useCollateral, use4MicaParams, useDeposit, useClient } from './hooks'
 
 type OpenTabState = {
@@ -60,10 +60,24 @@ function App() {
   const [tabTotalDisplay, setTabTotalDisplay] = useState('')
   const [showSettlePrompt, setShowSettlePrompt] = useState(false)
   const [settlingTab, setSettlingTab] = useState(false)
-
-  const { logs, appendLog } = useActivityLog()
-  const { coreParams, paramsLoading } = use4MicaParams(isConnected, appendLog)
+  const { logs, appendLog: rawAppendLog } = useActivityLog()
+  const appendLog = useCallback(
+    (entry: string, tone?: 'info' | 'warn' | 'success' | 'error', txHash?: string) => {
+      const lower = entry.toLowerCase()
+      const isPayment =
+        lower.includes('payment requested') || lower.includes('payment settled') || lower.includes('payment failed')
+      const isDeposit = lower.includes('deposit')
+      const isTab = lower.includes('tab ')
+      if (isPayment || isDeposit || isTab) {
+        rawAppendLog(entry, tone, txHash)
+      } else {
+        console.info('[log suppressed]', entry)
+      }
+    },
+    [rawAppendLog]
+  )
   const { client: sdkClient } = useClient(appendLog)
+  const { coreParams, paramsLoading } = use4MicaParams(isConnected, appendLog)
 
   const trackedTokens = useMemo(() => {
     const tokens = new Set<string>()
@@ -182,7 +196,6 @@ function App() {
     try {
       const guarantees = await sdkClient.recipient.getTabGuarantees(openTab.tabId)
       if (!guarantees.length) {
-        appendLog(`No guarantee found for tab #${tabIdToHex(openTab.tabId)}.`, 'warn')
         setTabReqId(null)
         setTabDueAmount(null)
         setTabDueDisplay('')
@@ -221,23 +234,21 @@ function App() {
       setTabTotalDisplay('')
       return null
     }
-  }, [openTab, sdkClient])
+  }, [openTab, sdkClient, appendLog])
 
   const paymentEvents = useMemo(
     () => ({
       onPaymentRequested: (chunkId: string, amount?: string) => {
-        appendLog(`#${chunkId} ${amount ? `${amount}` : ''}`, 'warn')
+        appendLog(`Payment requested (#${chunkId}${amount ? ` · ${amount}` : ''})`, 'warn')
         void refreshTabDue()
       },
       onPaymentSettled: (chunkId: string, amount?: string, txHash?: string) => {
-        appendLog(`#${chunkId} ${amount ? `${amount}` : 'Settled'}`, 'success', txHash)
+        appendLog(`Payment settled (#${chunkId}${amount ? ` · ${amount}` : ''})`, 'success', txHash)
         void refreshTabDue()
       },
       onPaymentFailed: (chunkId: string, err: unknown, amount?: string) => {
         appendLog(
-          `Payment failed for ${chunkId}${amount ? ` · ${amount}` : ''}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `Payment failed (#${chunkId}${amount ? ` · ${amount}` : ''})`,
           'error'
         )
         void refreshTabDue()
@@ -247,8 +258,16 @@ function App() {
   )
 
   const ensureTabAllowance = useCallback(
-    async (client: fourMica.Client, amount: bigint) => {
+    async (amount: bigint) => {
       if (!openTab) return
+      if (!signer || !address) {
+        appendLog('Connect your wallet before settling.', 'error')
+        throw new Error('missing-signer')
+      }
+      if (!coreParams?.contractAddress || !isAddress(coreParams.contractAddress)) {
+        appendLog('Missing 4mica contract address; reload params and try again.', 'error')
+        throw new Error('missing-contract')
+      }
       if (openTab.assetAddress.toLowerCase() === ZeroAddress.toLowerCase()) {
         appendLog('Native-asset tabs are not supported for quick settlement in this demo.', 'warn')
         throw new Error('native-asset-tab')
@@ -258,11 +277,19 @@ function App() {
         appendLog('No outstanding allowance needed for this tab.', 'info')
         return
       }
-      const amountLabel = amount > 0n ? `${formatUnits(amount, openTab.decimals)} ${openTab.symbol}` : ''
+      const amountLabel = `${formatUnits(amount, openTab.decimals)} ${openTab.symbol}`
+
+      const erc20 = getErc20Contract(openTab.assetAddress, signer)
+      const currentAllowance: bigint = await erc20.allowance(address, coreParams.contractAddress)
+      if (currentAllowance >= amount) {
+        appendLog('Existing allowance is sufficient for settlement.')
+        return
+      }
 
       try {
-        await client.user.approveErc20(openTab.assetAddress, amount)
-        appendLog(`Approval ready for ${amountLabel}`)
+        const tx = await erc20.approve(coreParams.contractAddress, amount)
+        const receipt = await tx.wait?.(1)
+        appendLog(`Approval ready for ${amountLabel}`, 'success', receipt?.hash || tx.hash)
         return
       } catch (err) {
         appendLog(
@@ -272,9 +299,11 @@ function App() {
       }
 
       try {
-        await client.user.approveErc20(openTab.assetAddress, 0n)
-        await client.user.approveErc20(openTab.assetAddress, amount)
-        appendLog(`Approval refreshed for ${amountLabel || 'tab amount'}`)
+        const resetTx = await erc20.approve(coreParams.contractAddress, 0n)
+        await resetTx.wait?.(1)
+        const tx = await erc20.approve(coreParams.contractAddress, amount)
+        const receipt = await tx.wait?.(1)
+        appendLog(`Approval refreshed for ${amountLabel || 'tab amount'}`, 'success', receipt?.hash || tx.hash)
       } catch (err) {
         appendLog(
           `Approval retry failed: ${err instanceof Error ? err.message : String(err)}. Approve manually then retry.`,
@@ -283,13 +312,23 @@ function App() {
         throw err
       }
     },
-    [openTab]
+    [openTab, signer, address, coreParams?.contractAddress, appendLog]
   )
 
   const handleSettleTab = useCallback(async () => {
-    if (!openTab || !sdkClient) return
-    if (!coreParams) {
+    if (!openTab) return
+    if (!signer || !address) {
+      appendLog('Connect your wallet before settling.', 'error')
+      return
+    }
+    if (!coreParams?.contractAddress || !isAddress(coreParams.contractAddress)) {
       appendLog('Missing 4mica contract parameters; try again in a moment.', 'error')
+      return
+    }
+
+    const requiredChainId = coreParams?.chainId ?? TARGET_CHAIN_ID
+    if (chainId !== null && chainId !== requiredChainId) {
+      appendLog(`Switch to chain ${requiredChainId} before settling.`, 'warn')
       return
     }
 
@@ -306,17 +345,18 @@ function App() {
         return
       }
 
-      await ensureTabAllowance(sdkClient, due)
+      if (openTab.assetAddress.toLowerCase() === ZeroAddress.toLowerCase()) {
+        appendLog('Native-asset tabs are not supported for quick settlement in this demo.', 'warn')
+        return
+      }
+
+      await ensureTabAllowance(due)
       appendLog(`Settling 4mica tab #${settleTabLabel} for ${settleAmountDisplay || 'the outstanding amount'}…`)
 
-      const receipt: any = await sdkClient.user.payTab(
-        openTab.tabId,
-        reqId,
-        due,
-        openTab.recipientAddress,
-        openTab.assetAddress
-      )
-      const txHash = receipt?.transactionHash || receipt?.hash || undefined
+      const core = getCoreContract(coreParams.contractAddress, signer)
+      const tx = await core.payTabInERC20Token(openTab.tabId, openTab.assetAddress, due, openTab.recipientAddress)
+      const receipt = await tx.wait?.(1)
+      const txHash = receipt?.hash || tx?.hash || undefined
       appendLog(`Tab #${tabIdToHex(openTab.tabId)} settled.`, 'success', txHash)
       setOpenTab(null)
       setTabReqId(null)
@@ -331,8 +371,11 @@ function App() {
     }
   }, [
     openTab,
-    sdkClient,
-    coreParams,
+    signer,
+    address,
+    coreParams?.contractAddress,
+    coreParams?.chainId,
+    chainId,
     appendLog,
     settleAmountDisplay,
     ensureTabAllowance,
@@ -359,10 +402,10 @@ function App() {
   }, [isConnected])
 
   useEffect(() => {
-    if (openTab && sdkClient) {
+    if (openTab) {
       refreshTabDue()
     }
-  }, [openTab?.tabId, sdkClient])
+  }, [openTab?.tabId, refreshTabDue])
 
   useEffect(() => {
     if (!openTab || !tabDueAmount || tabDueAmount <= 0n) return

@@ -1,42 +1,35 @@
 import { useCallback, useState } from 'react'
+import type { CorePublicParameters } from 'sdk-4mica'
 import { formatUnits, isAddress, parseUnits } from 'ethers'
 import type { JsonRpcSigner } from 'ethers'
-import * as fourMica from 'sdk-4mica'
 import { TARGET_CHAIN_ID } from '../context/WalletContext'
 import { config } from '../config/env'
 import type { PaymentScheme } from '../utils/paymentHandler'
-import { useClient } from './useClient'
+import { getCoreContract, getErc20Contract, getProvider } from '../utils/fourMicaContract'
 
 export const useDeposit = (
   signer: JsonRpcSigner | null,
   address: string | null,
   chainId: number | null,
   paymentScheme: PaymentScheme,
-  coreParams: fourMica.CorePublicParameters | null,
+  coreParams: CorePublicParameters | null,
   appendLog: (entry: string, tone?: 'info' | 'warn' | 'success' | 'error') => void,
   onSuccess: () => void
 ) => {
-  const { client, clientLoading } = useClient(appendLog)
   const [depositLoading, setDepositLoading] = useState(false)
 
   // Helper to resolve metadata, ideally SDK should handle this or we keep helper
   // Keeping helper for now as SDK doesn't expose easy metadata fetch
   const resolveTokenMeta = useCallback(
     async (tokenAddr: string) => {
-      // We can use signer provider or client provider
-      const provider = signer?.provider || (client as any)?.gateway?.provider
+      const provider = getProvider(signer, coreParams?.ethereumHttpRpcUrl || config.rpcProxyUrl)
       if (!provider) {
         // Can't fail hard here if client is not ready, but usually we need provider
         return null
       }
 
       try {
-        const { Contract } = await import('ethers')
-        const erc20 = new Contract(
-          tokenAddr,
-          ['function symbol() view returns (string)', 'function decimals() view returns (uint8)'],
-          provider
-        )
+        const erc20 = getErc20Contract(tokenAddr, provider)
         const [symbol, decimalsValue] = await Promise.all([erc20.symbol(), erc20.decimals()])
         return { symbol: String(symbol), decimals: Number(decimalsValue) || 18 }
       } catch (err) {
@@ -47,19 +40,19 @@ export const useDeposit = (
         return null
       }
     },
-    [signer, client, appendLog]
+    [signer, coreParams?.ethereumHttpRpcUrl, appendLog]
   )
 
   const handleDeposit = useCallback(
     async (depositMode: 'default' | 'custom', depositAmount: string, tokenAddress: string, tokenDecimals: string) => {
-      if (!client) {
-        appendLog('SDK Client not ready.', 'error')
-        return
-      }
-
       // Check scheme
       if (paymentScheme !== '4mica-credit') {
         appendLog('Deposits are only needed in 4mica credit mode. Switch payment rail to deposit.', 'warn')
+        return
+      }
+
+      if (!signer || !address) {
+        appendLog('Connect a wallet before depositing.', 'error')
         return
       }
 
@@ -70,8 +63,13 @@ export const useDeposit = (
 
       const requiredChainId = coreParams?.chainId ?? TARGET_CHAIN_ID
       if (chainId !== null && BigInt(chainId) !== BigInt(requiredChainId)) {
-        // Note: SDK usually handles chain mismatch internally or we rely on WalletContext
         appendLog(`Switch to chain ${requiredChainId} before depositing.`, 'warn')
+        return
+      }
+
+      const coreAddress = coreParams?.contractAddress
+      if (!coreAddress || !isAddress(coreAddress)) {
+        appendLog('Missing 4mica contract address; reload params and try again.', 'error')
         return
       }
 
@@ -91,51 +89,60 @@ export const useDeposit = (
 
       setDepositLoading(true)
       try {
-        // Resolve meta for logging/decimals
         const meta = await resolveTokenMeta(tokenToUse)
-        if (!meta) {
-          appendLog(`Invalid or non-existent token at ${tokenToUse}.`, 'error')
+        const fallbackDecimals = Number(tokenDecimals) || 18
+        const decimals = meta?.decimals ?? fallbackDecimals
+        const tokenLabel =
+          meta?.symbol ??
+          (tokenToUse ? `${tokenToUse.slice(0, 6)}…${tokenToUse.slice(-4)}` : useDefaultToken ? 'default token' : 'token')
+
+        if (!decimals || decimals < 0) {
+          appendLog(`Unable to resolve decimals for ${tokenToUse}.`, 'error')
           setDepositLoading(false)
           return
         }
 
-        const decimals = meta.decimals
         const parsedAmount = parseUnits(amount, decimals)
-        const tokenLabel = meta.symbol
 
         appendLog(`Preparing deposit of ${formatUnits(parsedAmount, decimals)} ${tokenLabel} (${decimals} decimals)`)
 
-        // SDK handles approval automatically? 
-        // No, client.user.approveErc20 and client.user.deposit are separate.
-        // And SDK deposit doesn't auto-approve.
-
-        // 1. Approve
-        appendLog(`Requesting token approval…`) // SDK doesn't check allowance first explicitly in exposed method
-        // But we can just approve.
-        try {
-          const tx = await client.user.approveErc20(tokenToUse, parsedAmount)
-          appendLog(`Approve sent: ${(tx as any)?.hash || 'ok'}`)
-        } catch (err) {
-          // It might fail if already approved? Or user rejected.
-          // Continue? Or throw?
-          appendLog(`Approval step warning: ${err instanceof Error ? err.message : String(err)}`)
-          // We try to proceed to deposit in case it was already approved
+        if (!signer.provider) {
+          appendLog('Wallet provider unavailable; reconnect your wallet.', 'error')
+          setDepositLoading(false)
+          return
         }
 
-        // 2. Deposit
-        const tx = await client.user.deposit(parsedAmount, tokenToUse)
-        appendLog(`Deposit submitted: ${(tx as any)?.hash || 'ok'}`)
+        const walletAddress = await signer.getAddress()
+        const erc20 = getErc20Contract(tokenToUse, signer)
+        const allowance: bigint = await erc20.allowance(walletAddress, coreAddress)
+        if (allowance < parsedAmount) {
+          appendLog(`Requesting token approval…`)
+          try {
+            const approveTx = await erc20.approve(coreAddress, parsedAmount)
+            const receipt = await approveTx.wait?.(1)
+            appendLog(`Approve sent: ${receipt?.hash || approveTx.hash || 'ok'}`)
+          } catch (err) {
+            appendLog(`Approval step warning: ${err instanceof Error ? err.message : String(err)}`)
+            // Continue in case allowance is already set
+          }
+        } else {
+          appendLog('Existing allowance is sufficient; skipping approval.')
+        }
+
+        const core = getCoreContract(coreAddress, signer)
+        const tx = await core.depositStablecoin(tokenToUse, parsedAmount)
+        const receipt = await tx.wait?.(1)
+        appendLog(`Deposit submitted: ${receipt?.hash || tx.hash || 'ok'}`)
 
         onSuccess()
-
       } catch (err) {
-        appendLog(`Deposit failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
+        appendLog('Deposit failed. Please re-approve the token and retry.', 'error')
       } finally {
         setDepositLoading(false)
       }
     },
-    [client, chainId, paymentScheme, coreParams, appendLog, resolveTokenMeta, onSuccess]
+    [signer, address, chainId, paymentScheme, coreParams, appendLog, resolveTokenMeta, onSuccess]
   )
 
-  return { depositLoading: depositLoading || clientLoading, handleDeposit }
+  return { depositLoading, handleDeposit }
 }
