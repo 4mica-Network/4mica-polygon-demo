@@ -187,6 +187,30 @@ function App() {
               onSwitchNetwork={switchToTargetChain}
             />
           </div>
+        ) : error ? (
+          <div className='bg-gray-900 border border-gray-700 rounded-2xl p-8 shadow-2xl space-y-4 max-w-2xl'>
+            <div className='inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-800 border border-gray-600 text-xs uppercase tracking-wider text-red-200'>
+              <span className='h-2 w-2 rounded-full bg-red-500 animate-pulse' />
+              Signer offline
+            </div>
+            <div className='text-white text-xl font-semibold'>Signer not found</div>
+            <p className='text-gray-300 text-sm leading-relaxed'>
+              We could not reach the backend signer for this public demo. Start it locally with your key and retry the
+              connection.
+            </p>
+            <div className='flex items-center gap-3 flex-wrap'>
+              <button
+                onClick={handleConnect}
+                disabled={isConnecting}
+                className='px-4 py-3 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-500 transition disabled:opacity-60 cursor-pointer'
+              >
+                {isConnecting ? 'Reconnecting…' : 'Retry signer connection'}
+              </button>
+              <span className='text-xs text-gray-400'>
+                Status: {isConnecting ? 'Reconnecting to signer' : 'Awaiting signer'}
+              </span>
+            </div>
+          </div>
         ) : (
           <div className='bg-gray-900 border border-gray-700 rounded-2xl p-8 shadow-2xl space-y-6'>
             <div className='flex items-start justify-between gap-4 flex-wrap'>
@@ -202,7 +226,7 @@ function App() {
                 </p>
               </div>
               <div className='px-3 py-1.5 rounded-full text-xs bg-gray-800 border border-gray-600 text-gray-200'>
-                {isConnecting ? 'Connecting…' : error ? 'Signer unreachable' : 'Waiting for signer'}
+                {isConnecting ? 'Connecting…' : 'Waiting for signer'}
               </div>
             </div>
 
@@ -217,12 +241,9 @@ function App() {
                   <span>RPC</span>
                   <span className='text-gray-100 break-all'>{config.rpcProxyUrl}</span>
                 </div>
-                {error && <div className='text-sm text-red-300 mt-2'>{error}</div>}
-                {!error && (
-                  <div className='text-xs text-emerald-200 mt-2'>
-                    The app will use the backend signer for all on-chain payments.
-                  </div>
-                )}
+                <div className='text-xs text-emerald-200 mt-2'>
+                  The app will use the backend signer for all on-chain payments.
+                </div>
               </div>
 
               <div className='rounded-xl border border-gray-800 bg-gray-800 p-5 space-y-3'>
