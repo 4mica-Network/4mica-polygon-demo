@@ -62,11 +62,13 @@ const WalletSidebar = ({
         </div>
       </div>
 
-      <CollateralCard
-        collateral={collateral}
-        collateralLoading={collateralLoading}
-        primaryCollateral={primaryCollateral}
-      />
+      {paymentScheme === '4mica-credit' && (
+        <CollateralCard
+          collateral={collateral}
+          collateralLoading={collateralLoading}
+          primaryCollateral={primaryCollateral}
+        />
+      )}
 
       <WalletInfo
         address={address}

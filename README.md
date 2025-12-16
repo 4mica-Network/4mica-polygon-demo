@@ -20,15 +20,30 @@ cp .env.default .env
 - `X402_ENABLED` - Enable x402 payment flow
 - `X402_PAY_TO` - Wallet address to receive payments
 - `X402_RPC_URL` - JSON-RPC endpoint used to verify on-chain x402 payments
+- `4MICA_WALLET_PRIVATE_KEY` - Private key used by the Rust server for 4mica tab logging (not exposed to the client)
+
+**Signer (Node service, keeps the key off the client):**
+
+- `SIGNER_PRIVATE_KEY` - Wallet private key used for signing payments
+- `SIGNER_RPC_URL` - RPC URL used by the signer (default: Polygon Amoy public RPC)
+- `SIGNER_PORT` / `SIGNER_HOST` - Where the signer service listens (default: 0.0.0.0:4000)
+- `SIGNER_CHAIN_ID` - Expected chain ID (default: 80002)
 
 **Client:**
 
 - `VITE_PLAYLIST_URL` - HLS playlist URL for the video stream
-- `VITE_WALLET_PRIVATE_KEY` - Wallet private key for payments
 - `VITE_STREAM_SERVER_URL` - Stream server URL (default: http://localhost:3000)
+- `VITE_4MICA_RPC_URL`, `VITE_DEFAULT_TOKEN_ADDRESS`, `VITE_ETH_RPC_PROXY_URL` - RPC + token defaults
 - `VITE_ENABLE_EXTERNAL_STREAMING` - Enable streaming from external URLs (required for videos outside server's `FILE_DIRECTORY`, default: false)
+- `VITE_SIGNER_SERVICE_URL` - URL the client will call for signatures (default: http://localhost:4000)
 
 ## Running the Demo
+
+**Start the signer service (required):**
+
+```bash
+SIGNER_PRIVATE_KEY=0xyourkey npm run signer
+```
 
 **Start the server:**
 
