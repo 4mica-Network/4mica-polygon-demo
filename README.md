@@ -25,7 +25,8 @@ cp .env.default .env
 **Signer (Node service, keeps the key off the client):**
 
 - `SIGNER_PRIVATE_KEY` - Wallet private key used for signing payments
-- `SIGNER_RPC_URL` - RPC URL used by the signer (default: Polygon Amoy public RPC)
+- `SIGNER_RPC_URL` - Chain RPC URL used by the signer wallet/provider (default: Polygon Amoy public RPC)
+- `SIGNER_CORE_RPC_URL` (or `4MICA_RPC_URL`) - 4mica Core API base URL used by the SDK for collateral/guarantee calls (default: https://api.4mica.xyz/)
 - `SIGNER_PORT` / `SIGNER_HOST` - Where the signer service listens (default: 0.0.0.0:4000)
 - `SIGNER_CHAIN_ID` - Expected chain ID (default: 80002)
 

@@ -8,7 +8,7 @@ These steps build the Rust stream server and the Vite client into containers, se
 - An `.env` file in the repo root (start from `.env.default`) that contains the server variables:
   - `X402_ENABLED`, `X402_PAY_TO`, `X402_RPC_URL`, etc.
   - Add `SERVER_ADVERTISED_URL` and set it to the public URL nginx will serve (e.g. `https://demo.example.com` or `http://localhost:8080`).
-  - Add signer variables: `SIGNER_PRIVATE_KEY`, `SIGNER_RPC_URL`, optional `SIGNER_CHAIN_ID`.
+  - Add signer variables: `SIGNER_PRIVATE_KEY`, `SIGNER_RPC_URL` (chain RPC), optional `SIGNER_CORE_RPC_URL`/`4MICA_RPC_URL` (4mica Core API), and `SIGNER_CHAIN_ID`.
   - Add `4MICA_WALLET_PRIVATE_KEY` for server-side 4mica logging (not exposed to the client).
 
 ## Build and run

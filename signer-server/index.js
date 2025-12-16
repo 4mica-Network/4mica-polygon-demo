@@ -1,14 +1,17 @@
+import 'dotenv/config'
 import { createServer } from 'node:http'
-import { JsonRpcProvider, Wallet, Contract, getBytes, hexlify, isHexString } from 'ethers'
+import { JsonRpcProvider, Wallet, Contract, getBytes, isHexString } from 'ethers'
 import { Client, ConfigBuilder } from 'sdk-4mica'
 
 const {
   SIGNER_PRIVATE_KEY,
   SIGNER_RPC_URL,
+  SIGNER_CORE_RPC_URL,
   SIGNER_PORT = 4000,
   SIGNER_HOST = '0.0.0.0',
   SIGNER_CHAIN_ID,
 } = process.env
+const FOUR_MICA_RPC_URL = process.env['4MICA_RPC_URL']
 
 if (!SIGNER_PRIVATE_KEY) {
   console.error('[signer] Missing SIGNER_PRIVATE_KEY environment variable.')
@@ -57,12 +60,14 @@ const sendJson = (res, status, payload) => {
 const ensureSdkClient = async () => {
   if (sdkClientPromise) return sdkClientPromise
   sdkClientPromise = (async () => {
-    const cfg = new ConfigBuilder()
-      .fromEnv()
-      .rpcUrl(SIGNER_RPC_URL || 'https://api.4mica.xyz/')
-      .walletPrivateKey(SIGNER_PRIVATE_KEY)
-      .build()
-    return Client.new(cfg)
+    const cfg = new ConfigBuilder().fromEnv()
+    const coreRpcUrl = SIGNER_CORE_RPC_URL || FOUR_MICA_RPC_URL
+    if (coreRpcUrl) {
+      cfg.rpcUrl(coreRpcUrl)
+    }
+    const builtCfg = cfg.walletPrivateKey(SIGNER_PRIVATE_KEY).build()
+    // sdk-4mica uses its own Core RPC; SIGNER_RPC_URL stays the on-chain provider
+    return Client.new(builtCfg)
   })()
   return sdkClientPromise
 }
