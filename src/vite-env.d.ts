@@ -2,7 +2,12 @@
 
 interface ImportMetaEnv {
   readonly VITE_PLAYLIST_URL: string
-  readonly VITE_WALLET_PRIVATE_KEY: string
+  readonly VITE_STREAM_SERVER_URL: string
+  readonly VITE_4MICA_RPC_URL: string
+  readonly VITE_DEFAULT_TOKEN_ADDRESS: string
+  readonly VITE_ETH_RPC_PROXY_URL: string
+  readonly VITE_ENABLE_EXTERNAL_STREAMING: string
+  readonly VITE_SIGNER_SERVICE_URL: string
 }
 
 interface ImportMeta {

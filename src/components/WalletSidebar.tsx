@@ -35,22 +35,6 @@ const WalletSidebar = ({
 }: WalletSidebarProps) => {
   return (
     <div className='bg-gray-800 border border-gray-700 rounded-2xl p-6 shadow-2xl flex flex-col gap-5'>
-      <CollateralCard
-        collateral={collateral}
-        collateralLoading={collateralLoading}
-        primaryCollateral={primaryCollateral}
-      />
-
-      <WalletInfo
-        address={address}
-        chainId={chainId}
-        balance={balance}
-        balanceLoading={balanceLoading}
-        tokenBalances={tokenBalances}
-        onWrongChain={onWrongChain}
-        onCopyAddress={onCopyAddress}
-      />
-
       <div className='flex flex-col gap-5'>
         <PaymentRailSelector paymentScheme={paymentScheme} onSchemeChange={onSchemeChange} />
 
@@ -77,6 +61,24 @@ const WalletSidebar = ({
           )}
         </div>
       </div>
+
+      {paymentScheme === '4mica-credit' && (
+        <CollateralCard
+          collateral={collateral}
+          collateralLoading={collateralLoading}
+          primaryCollateral={primaryCollateral}
+        />
+      )}
+
+      <WalletInfo
+        address={address}
+        chainId={chainId}
+        balance={balance}
+        balanceLoading={balanceLoading}
+        tokenBalances={tokenBalances}
+        onWrongChain={onWrongChain}
+        onCopyAddress={onCopyAddress}
+      />
     </div>
   )
 }

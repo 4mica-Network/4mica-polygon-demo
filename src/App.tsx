@@ -128,8 +128,6 @@ function App() {
     collateral[0] ??
     null
 
-  const hasEnvKey = useMemo(() => Boolean(config.walletPrivateKey?.trim()), [])
-
   if (!hasTriedEager) {
     return <BootstrapLoader />
   }
@@ -195,16 +193,16 @@ function App() {
               <div>
                 <div className='inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-800 border border-gray-600 text-xs uppercase tracking-wider text-indigo-200'>
                   <span className='h-2 w-2 rounded-full bg-emerald-400 animate-pulse' />
-                  Headless wallet mode
+                  Backend signer
                 </div>
-                <div className='text-white text-xl font-semibold mt-3'>Load the configured payment key</div>
+                <div className='text-white text-xl font-semibold mt-3'>Start the signing service</div>
                 <p className='text-gray-300 text-sm leading-relaxed mt-2 max-w-2xl'>
-                  The player now reads VITE_WALLET_PRIVATE_KEY from your environment and uses it for SDK calls and
-                  per-segment payments. No browser wallet login is needed.
+                  The private key now lives on a backend signer so it never ships to the browser. Run the signer service
+                  with SIGNER_PRIVATE_KEY set, then retry below.
                 </p>
               </div>
               <div className='px-3 py-1.5 rounded-full text-xs bg-gray-800 border border-gray-600 text-gray-200'>
-                {isConnecting ? 'Loading key…' : hasEnvKey ? 'Ready' : 'Key missing'}
+                {isConnecting ? 'Connecting…' : error ? 'Signer unreachable' : 'Waiting for signer'}
               </div>
             </div>
 
@@ -212,35 +210,35 @@ function App() {
               <div className='rounded-xl border border-gray-800 bg-gray-800 p-5 space-y-3'>
                 <div className='text-gray-200 font-semibold'>Environment checks</div>
                 <div className='text-sm text-gray-300 flex items-center justify-between'>
-                  <span>Private key</span>
-                  <span className={hasEnvKey ? 'text-emerald-300' : 'text-red-300'}>
-                    {hasEnvKey ? 'Detected' : 'Missing'}
-                  </span>
+                  <span>Signer URL</span>
+                  <span className='text-gray-100 break-all'>{config.signerServiceUrl}</span>
                 </div>
                 <div className='text-sm text-gray-300 flex items-center justify-between'>
                   <span>RPC</span>
                   <span className='text-gray-100 break-all'>{config.rpcProxyUrl}</span>
                 </div>
                 {error && <div className='text-sm text-red-300 mt-2'>{error}</div>}
-                {!hasEnvKey && (
-                  <div className='text-xs text-amber-200 mt-2'>
-                    Add VITE_WALLET_PRIVATE_KEY to your .env and restart the client.
+                {!error && (
+                  <div className='text-xs text-emerald-200 mt-2'>
+                    The app will use the backend signer for all on-chain payments.
                   </div>
                 )}
               </div>
 
               <div className='rounded-xl border border-gray-800 bg-gray-800 p-5 space-y-3'>
-                <div className='text-gray-200 font-semibold'>Retry</div>
+                <div className='text-gray-200 font-semibold'>How to run it</div>
                 <p className='text-sm text-gray-300'>
-                  We automatically attempt to load the configured key on startup. If you just updated your env file, use
-                  the button below to try again.
+                  From the repo root, start the signer service with your key:
                 </p>
+                <pre className='bg-gray-950 border border-gray-800 rounded-lg text-xs text-gray-200 p-3 overflow-auto'>
+                  SIGNER_PRIVATE_KEY=0xyourkey npm run signer
+                </pre>
                 <button
                   onClick={handleConnect}
-                  disabled={isConnecting || !hasEnvKey}
+                  disabled={isConnecting}
                   className='w-full px-4 py-3 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-500 transition disabled:opacity-60 cursor-pointer'
                 >
-                  {isConnecting ? 'Loading key…' : 'Retry private key load'}
+                  {isConnecting ? 'Connecting…' : 'Retry signer connection'}
                 </button>
               </div>
             </div>
