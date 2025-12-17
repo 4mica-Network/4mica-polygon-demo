@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { createServer } from 'node:http'
-import { JsonRpcProvider, Wallet, Contract, getBytes, isHexString } from 'ethers'
+import { JsonRpcProvider, Wallet, Contract, getBytes, isHexString, isAddress } from 'ethers'
 import { Client, ConfigBuilder } from 'sdk-4mica'
 
 const {
@@ -10,6 +10,7 @@ const {
   SIGNER_PORT = 4000,
   SIGNER_HOST = '0.0.0.0',
   SIGNER_CHAIN_ID,
+  X402_PAY_TO,
 } = process.env
 const FOUR_MICA_RPC_URL = process.env['4MICA_RPC_URL']
 
@@ -20,7 +21,15 @@ if (!SIGNER_PRIVATE_KEY) {
 
 const provider = SIGNER_RPC_URL ? new JsonRpcProvider(SIGNER_RPC_URL) : undefined
 const wallet = new Wallet(SIGNER_PRIVATE_KEY, provider)
+const walletAddressPromise = wallet.getAddress()
 let sdkClientPromise
+const expectedPayTo = (() => {
+  if (!X402_PAY_TO || !isAddress(X402_PAY_TO)) {
+    console.error('[signer] Missing or invalid X402_PAY_TO environment variable.')
+    process.exit(1)
+  }
+  return X402_PAY_TO
+})()
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -88,6 +97,146 @@ const resolveChainId = async () => {
   }
 
   return 80002
+}
+
+class ValidationError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'ValidationError'
+  }
+}
+
+const normalizeAddress = addr => (typeof addr === 'string' ? addr.toLowerCase() : '')
+
+const fieldsMatch = (actual, expected) => {
+  if (!Array.isArray(actual) || actual.length !== expected.length) return false
+  const norm = arr => arr.map(item => `${item.name}:${item.type}`).sort()
+  const actualSet = new Set(norm(actual))
+  return norm(expected).every(key => actualSet.has(key))
+}
+
+const ensureBigIntish = (value, label) => {
+  try {
+    BigInt(value)
+  } catch {
+    throw new ValidationError(`${label} must be a numeric value`)
+  }
+}
+
+const ensureChainId = (domain, expectedChainId) => {
+  const domainChainId = domain?.chainId
+  const parsed = typeof domainChainId === 'bigint' ? Number(domainChainId) : Number(domainChainId)
+  if (!Number.isFinite(parsed)) {
+    throw new ValidationError('domain.chainId is required for typed data signatures')
+  }
+  if (parsed !== Number(expectedChainId)) {
+    throw new ValidationError(`domain.chainId mismatch; expected ${expectedChainId}, got ${parsed}`)
+  }
+}
+
+const validateGuaranteeClaims = (params) => {
+  const { domain, types, message, expectedChainId, signerAddress } = params
+  const structName = 'SolGuaranteeRequestClaimsV1'
+  const expectedFields = [
+    { name: 'user', type: 'address' },
+    { name: 'recipient', type: 'address' },
+    { name: 'tabId', type: 'uint256' },
+    { name: 'amount', type: 'uint256' },
+    { name: 'asset', type: 'address' },
+    { name: 'timestamp', type: 'uint64' },
+  ]
+
+  if (!fieldsMatch(types[structName], expectedFields)) {
+    throw new ValidationError(`Unexpected struct fields for ${structName}`)
+  }
+
+  const { user, recipient, tabId, amount, asset, timestamp } = message || {}
+  const requiredFields = ['user', 'recipient', 'tabId', 'amount', 'asset', 'timestamp']
+  if (!message || typeof message !== 'object' || requiredFields.some(field => !(field in message))) {
+    throw new ValidationError('message is missing required SolGuaranteeRequestClaimsV1 fields')
+  }
+  if (!isAddress(user) || !isAddress(recipient) || !isAddress(asset)) {
+    throw new ValidationError('user, recipient, and asset must be valid addresses')
+  }
+  if (normalizeAddress(user) !== normalizeAddress(signerAddress)) {
+    throw new ValidationError('message.user must match signer address')
+  }
+  if (normalizeAddress(recipient) !== normalizeAddress(expectedPayTo)) {
+    throw new ValidationError('message.recipient must match configured X402_PAY_TO')
+  }
+  ensureBigIntish(tabId, 'tabId')
+  ensureBigIntish(amount, 'amount')
+  ensureBigIntish(timestamp, 'timestamp')
+
+  ensureChainId(domain, expectedChainId)
+}
+
+const validateTransferWithAuthorization = (params) => {
+  const { domain, types, message, expectedChainId, signerAddress } = params
+  const structName = 'TransferWithAuthorization'
+  const expectedFields = [
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce', type: 'bytes32' },
+  ]
+
+  if (!fieldsMatch(types[structName], expectedFields)) {
+    throw new ValidationError(`Unexpected struct fields for ${structName}`)
+  }
+
+  const { from, to, value, validAfter, validBefore, nonce } = message || {}
+  const requiredFields = ['from', 'to', 'value', 'validAfter', 'validBefore', 'nonce']
+  if (!message || typeof message !== 'object' || requiredFields.some(field => !(field in message))) {
+    throw new ValidationError('message is missing required TransferWithAuthorization fields')
+  }
+  if (!isAddress(from) || !isAddress(to)) {
+    throw new ValidationError('from and to must be valid addresses')
+  }
+  if (normalizeAddress(from) !== normalizeAddress(signerAddress)) {
+    throw new ValidationError('message.from must match signer address')
+  }
+  if (normalizeAddress(to) !== normalizeAddress(expectedPayTo)) {
+    throw new ValidationError('message.to must match configured X402_PAY_TO')
+  }
+  ensureBigIntish(value, 'value')
+  ensureBigIntish(validAfter, 'validAfter')
+  ensureBigIntish(validBefore, 'validBefore')
+  if (!isHexString(nonce, 32)) {
+    throw new ValidationError('nonce must be a 32-byte hex string')
+  }
+
+  ensureChainId(domain, expectedChainId)
+  if (!isAddress(domain?.verifyingContract)) {
+    throw new ValidationError('domain.verifyingContract must be a valid address')
+  }
+}
+
+const validateTypedDataRequest = async (domain, types, message) => {
+  if (!domain || typeof domain !== 'object') throw new ValidationError('domain is required')
+  if (!types || typeof types !== 'object') throw new ValidationError('types are required')
+  if (!message || typeof message !== 'object') throw new ValidationError('message is required')
+
+  const supportedValidators = {
+    SolGuaranteeRequestClaimsV1: validateGuaranteeClaims,
+    TransferWithAuthorization: validateTransferWithAuthorization,
+  }
+
+  const requestedTypes = Object.keys(types).filter(key => key !== 'EIP712Domain')
+  if (requestedTypes.length !== 1) {
+    throw new ValidationError('Unsupported typed data structure requested')
+  }
+
+  const structName = requestedTypes[0]
+  const validator = supportedValidators[structName]
+  if (!validator) {
+    throw new ValidationError(`Struct ${structName} is not allowed for signing`)
+  }
+
+  const [expectedChainId, signerAddress] = await Promise.all([resolveChainId(), walletAddressPromise])
+  validator({ domain, types, message, expectedChainId, signerAddress })
 }
 
 const server = createServer(async (req, res) => {
@@ -188,11 +337,15 @@ const server = createServer(async (req, res) => {
         sendJson(res, 400, { error: 'domain, types, and message are required' })
         return
       }
+      await validateTypedDataRequest(domain, types, message)
       const signature = await wallet.signTypedData(domain, types, message)
       sendJson(res, 200, { signature, scheme: 'eip712' })
     } catch (err) {
-      console.error('[signer] Typed sign failed:', err)
-      sendJson(res, 500, { error: err instanceof Error ? err.message : 'signTypedData failed' })
+      const isValidation = err instanceof ValidationError
+      if (!isValidation) {
+        console.error('[signer] Typed sign failed:', err)
+      }
+      sendJson(res, isValidation ? 400 : 500, { error: err instanceof Error ? err.message : 'signTypedData failed' })
     }
     return
   }
