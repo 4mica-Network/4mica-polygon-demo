@@ -138,9 +138,11 @@ function App() {
       <div className='absolute -bottom-32 -left-10 h-80 w-80 bg-emerald-500/20 blur-3xl rounded-full pointer-events-none' />
 
       <div className='w-full max-w-6xl'>
-        <div className='mb-6'>
-          <h1 className='text-2xl font-light text-gray-100 tracking-wide'>Polygon streaming access</h1>
-          <p className='text-gray-400 text-sm mt-2 leading-relaxed'>
+        <div className='mb-4'>
+          <h1 className='text-4xl md:text-5xl font-bold text-white tracking-tight drop-shadow-lg'>
+            Polygon streaming access
+          </h1>
+          <p className='text-gray-200 text-base md:text-lg mt-3 leading-relaxed max-w-4xl'>
             Video is served by decentralized operators who get paid for each chunk delivered. Payments run through either
             x402 (direct on-chain) or a 4mica line of credit—swap between them to see the effect.
           </p>

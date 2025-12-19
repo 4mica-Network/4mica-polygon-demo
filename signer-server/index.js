@@ -23,6 +23,7 @@ const provider = SIGNER_RPC_URL ? new JsonRpcProvider(SIGNER_RPC_URL) : undefine
 const wallet = new Wallet(SIGNER_PRIVATE_KEY, provider)
 const walletAddressPromise = wallet.getAddress()
 let sdkClientPromise
+let sdkInitFailureCount = 0
 const expectedPayTo = (() => {
   if (!X402_PAY_TO || !isAddress(X402_PAY_TO)) {
     console.error('[signer] Missing or invalid X402_PAY_TO environment variable.')
@@ -30,6 +31,13 @@ const expectedPayTo = (() => {
   }
   return X402_PAY_TO
 })()
+
+process.on('uncaughtException', err => {
+  console.error('[signer] Uncaught exception:', err)
+})
+process.on('unhandledRejection', err => {
+  console.error('[signer] Unhandled rejection:', err)
+})
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -69,14 +77,23 @@ const sendJson = (res, status, payload) => {
 const ensureSdkClient = async () => {
   if (sdkClientPromise) return sdkClientPromise
   sdkClientPromise = (async () => {
-    const cfg = new ConfigBuilder().fromEnv()
-    const coreRpcUrl = SIGNER_CORE_RPC_URL || FOUR_MICA_RPC_URL
-    if (coreRpcUrl) {
-      cfg.rpcUrl(coreRpcUrl)
+    try {
+      const cfg = new ConfigBuilder().fromEnv()
+      const coreRpcUrl = SIGNER_CORE_RPC_URL || FOUR_MICA_RPC_URL
+      if (coreRpcUrl) {
+        cfg.rpcUrl(coreRpcUrl)
+      }
+      const builtCfg = cfg.walletPrivateKey(SIGNER_PRIVATE_KEY).build()
+      // sdk-4mica uses its own Core RPC; SIGNER_RPC_URL stays the on-chain provider
+      const client = await Client.new(builtCfg)
+      sdkInitFailureCount = 0
+      return client
+    } catch (err) {
+      sdkInitFailureCount += 1
+      console.error(`[signer] SDK client init failed (attempt ${sdkInitFailureCount}):`, err)
+      sdkClientPromise = undefined
+      throw err
     }
-    const builtCfg = cfg.walletPrivateKey(SIGNER_PRIVATE_KEY).build()
-    // sdk-4mica uses its own Core RPC; SIGNER_RPC_URL stays the on-chain provider
-    return Client.new(builtCfg)
   })()
   return sdkClientPromise
 }
@@ -240,134 +257,140 @@ const validateTypedDataRequest = async (domain, types, message) => {
 }
 
 const server = createServer(async (req, res) => {
-  const { method, url } = req
+  try {
+    const { method, url } = req
 
-  if (method === 'OPTIONS') {
-    res.writeHead(204, corsHeaders)
-    res.end()
-    return
-  }
+    if (method === 'OPTIONS') {
+      res.writeHead(204, corsHeaders)
+      res.end()
+      return
+    }
 
-  if (method === 'GET' && url === '/info') {
-    const chainId = await resolveChainId()
-    sendJson(res, 200, { address: await wallet.getAddress(), chainId })
-    return
-  }
+    if (method === 'GET' && url === '/info') {
+      const chainId = await resolveChainId()
+      sendJson(res, 200, { address: await wallet.getAddress(), chainId })
+      return
+    }
 
-  if (method === 'GET' && url.startsWith('/collateral')) {
-    try {
-      const [, query] = url.split('?', 2)
-      const params = new URLSearchParams(query || '')
-      const user = params.get('address') || params.get('user')
-      if (!user) {
-        sendJson(res, 400, { error: 'address is required' })
-        return
-      }
+    if (method === 'GET' && url.startsWith('/collateral')) {
+      try {
+        const [, query] = url.split('?', 2)
+        const params = new URLSearchParams(query || '')
+        const user = params.get('address') || params.get('user')
+        if (!user) {
+          sendJson(res, 400, { error: 'address is required' })
+          return
+        }
 
-      const client = await ensureSdkClient()
-      const assets = await client.user.getUser()
-      const provider = client.gateway?.provider || new JsonRpcProvider(SIGNER_RPC_URL)
+        const client = await ensureSdkClient()
+        const assets = await client.user.getUser()
+        const providerForLookup = client.gateway?.provider || provider
 
-      const metaCache = new Map()
-      const zeroAddress = '0x0000000000000000000000000000000000000000'
+        const metaCache = new Map()
+        const zeroAddress = '0x0000000000000000000000000000000000000000'
 
-      const results = []
-      for (const item of assets) {
-        const assetAddr = item.asset
-        if (!assetAddr) continue
+        const results = []
+        for (const item of assets) {
+          const assetAddr = item.asset
+          if (!assetAddr) continue
 
-        const metaKey = assetAddr.toLowerCase()
-        if (!metaCache.has(metaKey)) {
-          if (assetAddr.toLowerCase() === zeroAddress) {
-            metaCache.set(metaKey, { symbol: 'POL', decimals: 18 })
-          } else {
-            try {
-              const erc20 = new Contract(
-                assetAddr,
-                [
-                  'function symbol() view returns (string)',
-                  'function decimals() view returns (uint8)',
-                ],
-                provider
-              )
-              const [symbol, decimals] = await Promise.all([erc20.symbol(), erc20.decimals()])
-              metaCache.set(metaKey, { symbol: String(symbol), decimals: Number(decimals) || 18 })
-            } catch {
-              metaCache.set(metaKey, { symbol: `${assetAddr.slice(0, 6)}...${assetAddr.slice(-4)}`, decimals: 18 })
+          const metaKey = assetAddr.toLowerCase()
+          if (!metaCache.has(metaKey)) {
+            if (assetAddr.toLowerCase() === zeroAddress) {
+              metaCache.set(metaKey, { symbol: 'POL', decimals: 18 })
+            } else {
+              try {
+                if (!providerForLookup) throw new Error('provider unavailable')
+                const erc20 = new Contract(
+                  assetAddr,
+                  [
+                    'function symbol() view returns (string)',
+                    'function decimals() view returns (uint8)',
+                  ],
+                  providerForLookup
+                )
+                const [symbol, decimals] = await Promise.all([erc20.symbol(), erc20.decimals()])
+                metaCache.set(metaKey, { symbol: String(symbol), decimals: Number(decimals) || 18 })
+              } catch {
+                metaCache.set(metaKey, { symbol: `${assetAddr.slice(0, 6)}...${assetAddr.slice(-4)}`, decimals: 18 })
+              }
             }
           }
-        }
-        const meta = metaCache.get(metaKey)
+          const meta = metaCache.get(metaKey)
 
-        let locked = '0'
-        let total = item.collateral?.toString?.() ?? '0'
-        try {
-          const balanceInfo = await client.recipient.getUserAssetBalance(user, assetAddr)
-          if (balanceInfo) {
-            locked = balanceInfo.locked?.toString?.() ?? '0'
-            total = balanceInfo.total?.toString?.() ?? total
+          let locked = '0'
+          let total = item.collateral?.toString?.() ?? '0'
+          try {
+            const balanceInfo = await client.recipient.getUserAssetBalance(user, assetAddr)
+            if (balanceInfo) {
+              locked = balanceInfo.locked?.toString?.() ?? '0'
+              total = balanceInfo.total?.toString?.() ?? total
+            }
+          } catch (err) {
+            console.warn('[signer] collateral balance fetch failed:', err)
           }
-        } catch (err) {
-          console.warn('[signer] collateral balance fetch failed:', err)
+
+          results.push({
+            asset: assetAddr,
+            symbol: meta.symbol,
+            decimals: meta.decimals,
+            collateral: total,
+            locked,
+            withdrawalRequested: item.withdrawalRequestAmount?.toString?.() ?? '0',
+          })
         }
 
-        results.push({
-          asset: assetAddr,
-          symbol: meta.symbol,
-          decimals: meta.decimals,
-          collateral: total,
-          locked,
-          withdrawalRequested: item.withdrawalRequestAmount?.toString?.() ?? '0',
-        })
+        sendJson(res, 200, { assets: results })
+      } catch (err) {
+        console.error('[signer] collateral fetch failed:', err)
+        sendJson(res, 500, { error: err instanceof Error ? err.message : 'collateral fetch failed' })
       }
-
-      sendJson(res, 200, { assets: results })
-    } catch (err) {
-      console.error('[signer] collateral fetch failed:', err)
-      sendJson(res, 500, { error: err instanceof Error ? err.message : 'collateral fetch failed' })
+      return
     }
-    return
-  }
 
-  if (method === 'POST' && url === '/sign/typed') {
-    try {
-      const body = await parseBody(req)
-      const { domain, types, message } = body || {}
-      if (!domain || !types || !message) {
-        sendJson(res, 400, { error: 'domain, types, and message are required' })
-        return
+    if (method === 'POST' && url === '/sign/typed') {
+      try {
+        const body = await parseBody(req)
+        const { domain, types, message } = body || {}
+        if (!domain || !types || !message) {
+          sendJson(res, 400, { error: 'domain, types, and message are required' })
+          return
+        }
+        await validateTypedDataRequest(domain, types, message)
+        const signature = await wallet.signTypedData(domain, types, message)
+        sendJson(res, 200, { signature, scheme: 'eip712' })
+      } catch (err) {
+        const isValidation = err instanceof ValidationError
+        if (!isValidation) {
+          console.error('[signer] Typed sign failed:', err)
+        }
+        sendJson(res, isValidation ? 400 : 500, { error: err instanceof Error ? err.message : 'signTypedData failed' })
       }
-      await validateTypedDataRequest(domain, types, message)
-      const signature = await wallet.signTypedData(domain, types, message)
-      sendJson(res, 200, { signature, scheme: 'eip712' })
-    } catch (err) {
-      const isValidation = err instanceof ValidationError
-      if (!isValidation) {
-        console.error('[signer] Typed sign failed:', err)
-      }
-      sendJson(res, isValidation ? 400 : 500, { error: err instanceof Error ? err.message : 'signTypedData failed' })
+      return
     }
-    return
-  }
 
-  if (method === 'POST' && url === '/sign/message') {
-    try {
-      const body = await parseBody(req)
-      const { message } = body || {}
-      if (!message || !isHexString(message)) {
-        sendJson(res, 400, { error: 'message must be a hex string' })
-        return
+    if (method === 'POST' && url === '/sign/message') {
+      try {
+        const body = await parseBody(req)
+        const { message } = body || {}
+        if (!message || !isHexString(message)) {
+          sendJson(res, 400, { error: 'message must be a hex string' })
+          return
+        }
+        const signature = await wallet.signMessage(getBytes(message))
+        sendJson(res, 200, { signature, scheme: 'eip191' })
+      } catch (err) {
+        console.error('[signer] Message sign failed:', err)
+        sendJson(res, 500, { error: err instanceof Error ? err.message : 'signMessage failed' })
       }
-      const signature = await wallet.signMessage(getBytes(message))
-      sendJson(res, 200, { signature, scheme: 'eip191' })
-    } catch (err) {
-      console.error('[signer] Message sign failed:', err)
-      sendJson(res, 500, { error: err instanceof Error ? err.message : 'signMessage failed' })
+      return
     }
-    return
-  }
 
-  sendJson(res, 404, { error: 'Not found' })
+    sendJson(res, 404, { error: 'Not found' })
+  } catch (err) {
+    console.error('[signer] Unhandled request error:', err)
+    sendJson(res, 500, { error: 'Internal server error' })
+  }
 })
 
 server.listen(Number(SIGNER_PORT), SIGNER_HOST, async () => {
