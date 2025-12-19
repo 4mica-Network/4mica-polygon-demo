@@ -14,8 +14,38 @@ const {
 } = process.env
 const FOUR_MICA_RPC_URL = process.env['4MICA_RPC_URL']
 
+const nowIso = () => new Date().toISOString()
+const formatError = (err) => {
+  if (err instanceof Error) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+    }
+  }
+  return { message: String(err) }
+}
+const logWithLevel = (level, message, meta) => {
+  const prefix = `[signer] ${nowIso()} ${level.toUpperCase()}`
+  const logger = console[level] || console.log
+  if (meta) {
+    logger(prefix, message, meta)
+  } else {
+    logger(prefix, message)
+  }
+}
+const logInfo = (message, meta) => logWithLevel('log', message, meta)
+const logWarn = (message, meta) => logWithLevel('warn', message, meta)
+const logError = (message, meta) => logWithLevel('error', message, meta)
+
+let requestSequence = 0
+const createRequestId = () => {
+  requestSequence = (requestSequence + 1) % 1_000_000
+  return `${Date.now().toString(36)}-${requestSequence.toString(36)}`
+}
+
 if (!SIGNER_PRIVATE_KEY) {
-  console.error('[signer] Missing SIGNER_PRIVATE_KEY environment variable.')
+  logError('Missing SIGNER_PRIVATE_KEY environment variable.')
   process.exit(1)
 }
 
@@ -26,23 +56,36 @@ let sdkClientPromise
 let sdkInitFailureCount = 0
 const expectedPayTo = (() => {
   if (!X402_PAY_TO || !isAddress(X402_PAY_TO)) {
-    console.error('[signer] Missing or invalid X402_PAY_TO environment variable.')
+    logError('Missing or invalid X402_PAY_TO environment variable.')
     process.exit(1)
   }
   return X402_PAY_TO
 })()
 
+logInfo('Signer configuration', {
+  host: SIGNER_HOST,
+  port: SIGNER_PORT,
+  signerChainId: SIGNER_CHAIN_ID || 'auto',
+  rpcUrl: SIGNER_RPC_URL ? 'configured' : 'default',
+  coreRpcUrl: SIGNER_CORE_RPC_URL || FOUR_MICA_RPC_URL || 'default',
+  payTo: expectedPayTo,
+})
+
 process.on('uncaughtException', err => {
-  console.error('[signer] Uncaught exception:', err)
+  logError('Uncaught exception', formatError(err))
 })
 process.on('unhandledRejection', err => {
-  console.error('[signer] Unhandled rejection:', err)
+  logError('Unhandled rejection', formatError(err))
+})
+process.on('warning', warning => {
+  logWarn('Process warning', warning)
 })
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+  'Access-Control-Expose-Headers': 'X-Request-Id',
 }
 
 const parseBody = async req =>
@@ -63,15 +106,26 @@ const parseBody = async req =>
         reject(new Error('Invalid JSON payload'))
       }
     })
+    req.on('aborted', () => reject(new Error('Request aborted by client')))
     req.on('error', reject)
   })
 
-const sendJson = (res, status, payload) => {
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-    ...corsHeaders,
-  })
-  res.end(JSON.stringify(payload))
+const sendJson = (res, status, payload, requestId) => {
+  if (res.writableEnded) return
+  try {
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'X-Request-Id': requestId || '',
+      ...corsHeaders,
+    })
+    res.end(JSON.stringify(payload))
+  } catch (err) {
+    logError('Failed to send JSON response', { ...formatError(err), requestId, status })
+  }
+}
+
+const sendError = (res, status, message, requestId) => {
+  sendJson(res, status, { error: message, requestId }, requestId)
 }
 
 const ensureSdkClient = async () => {
@@ -87,10 +141,13 @@ const ensureSdkClient = async () => {
       // sdk-4mica uses its own Core RPC; SIGNER_RPC_URL stays the on-chain provider
       const client = await Client.new(builtCfg)
       sdkInitFailureCount = 0
+      logInfo('SDK client initialized', {
+        coreRpcUrl: coreRpcUrl || 'default',
+      })
       return client
     } catch (err) {
       sdkInitFailureCount += 1
-      console.error(`[signer] SDK client init failed (attempt ${sdkInitFailureCount}):`, err)
+      logError(`SDK client init failed (attempt ${sdkInitFailureCount})`, formatError(err))
       sdkClientPromise = undefined
       throw err
     }
@@ -109,7 +166,7 @@ const resolveChainId = async () => {
       const net = await provider.getNetwork()
       return Number(net.chainId)
     } catch (err) {
-      console.warn('[signer] Failed to read chainId from provider:', err)
+      logWarn('Failed to read chainId from provider', formatError(err))
     }
   }
 
@@ -257,18 +314,52 @@ const validateTypedDataRequest = async (domain, types, message) => {
 }
 
 const server = createServer(async (req, res) => {
+  const requestIdHeader = req.headers['x-request-id']
+  const requestId = (Array.isArray(requestIdHeader) ? requestIdHeader[0] : requestIdHeader) || createRequestId()
+  const startedAt = Date.now()
+  const requestMeta = {
+    requestId,
+    method: req.method,
+    url: req.url,
+    remoteAddress: req.socket?.remoteAddress,
+    userAgent: req.headers['user-agent'],
+    contentLength: req.headers['content-length'],
+  }
+
+  logInfo('Incoming request', requestMeta)
+  res.on('finish', () => {
+    logInfo('Request completed', {
+      requestId,
+      method: req.method,
+      url: req.url,
+      statusCode: res.statusCode,
+      durationMs: Date.now() - startedAt,
+    })
+  })
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      logWarn('Request closed before response finished', {
+        requestId,
+        method: req.method,
+        url: req.url,
+      })
+    }
+  })
+
   try {
     const { method, url } = req
 
     if (method === 'OPTIONS') {
-      res.writeHead(204, corsHeaders)
+      res.writeHead(204, { ...corsHeaders, 'X-Request-Id': requestId })
       res.end()
       return
     }
 
     if (method === 'GET' && url === '/info') {
       const chainId = await resolveChainId()
-      sendJson(res, 200, { address: await wallet.getAddress(), chainId })
+      const address = await wallet.getAddress()
+      sendJson(res, 200, { address, chainId }, requestId)
+      logInfo('Info request served', { requestId, chainId, address })
       return
     }
 
@@ -278,12 +369,22 @@ const server = createServer(async (req, res) => {
         const params = new URLSearchParams(query || '')
         const user = params.get('address') || params.get('user')
         if (!user) {
-          sendJson(res, 400, { error: 'address is required' })
+          sendError(res, 400, 'address is required', requestId)
           return
         }
+        if (!isAddress(user)) {
+          sendError(res, 400, 'address must be a valid address', requestId)
+          return
+        }
+        logInfo('Collateral request', { requestId, user })
 
         const client = await ensureSdkClient()
         const assets = await client.user.getUser()
+        if (!Array.isArray(assets)) {
+          logError('Collateral asset list invalid', { requestId, assetsType: typeof assets })
+          sendError(res, 500, 'collateral response malformed', requestId)
+          return
+        }
         const providerForLookup = client.gateway?.provider || provider
 
         const metaCache = new Map()
@@ -327,7 +428,7 @@ const server = createServer(async (req, res) => {
               total = balanceInfo.total?.toString?.() ?? total
             }
           } catch (err) {
-            console.warn('[signer] collateral balance fetch failed:', err)
+            logWarn('Collateral balance fetch failed', { requestId, assetAddr, ...formatError(err) })
           }
 
           results.push({
@@ -340,10 +441,11 @@ const server = createServer(async (req, res) => {
           })
         }
 
-        sendJson(res, 200, { assets: results })
+        sendJson(res, 200, { assets: results }, requestId)
+        logInfo('Collateral request completed', { requestId, assetCount: results.length })
       } catch (err) {
-        console.error('[signer] collateral fetch failed:', err)
-        sendJson(res, 500, { error: err instanceof Error ? err.message : 'collateral fetch failed' })
+        logError('Collateral fetch failed', { requestId, ...formatError(err) })
+        sendError(res, 500, err instanceof Error ? err.message : 'collateral fetch failed', requestId)
       }
       return
     }
@@ -353,18 +455,23 @@ const server = createServer(async (req, res) => {
         const body = await parseBody(req)
         const { domain, types, message } = body || {}
         if (!domain || !types || !message) {
-          sendJson(res, 400, { error: 'domain, types, and message are required' })
+          sendError(res, 400, 'domain, types, and message are required', requestId)
           return
         }
+        logInfo('Typed sign request received', {
+          requestId,
+          structNames: Object.keys(types || {}).filter(key => key !== 'EIP712Domain'),
+          domainChainId: domain?.chainId,
+        })
         await validateTypedDataRequest(domain, types, message)
         const signature = await wallet.signTypedData(domain, types, message)
-        sendJson(res, 200, { signature, scheme: 'eip712' })
+        sendJson(res, 200, { signature, scheme: 'eip712' }, requestId)
       } catch (err) {
         const isValidation = err instanceof ValidationError
         if (!isValidation) {
-          console.error('[signer] Typed sign failed:', err)
+          logError('Typed sign failed', { requestId, ...formatError(err) })
         }
-        sendJson(res, isValidation ? 400 : 500, { error: err instanceof Error ? err.message : 'signTypedData failed' })
+        sendError(res, isValidation ? 400 : 500, err instanceof Error ? err.message : 'signTypedData failed', requestId)
       }
       return
     }
@@ -374,28 +481,60 @@ const server = createServer(async (req, res) => {
         const body = await parseBody(req)
         const { message } = body || {}
         if (!message || !isHexString(message)) {
-          sendJson(res, 400, { error: 'message must be a hex string' })
+          sendError(res, 400, 'message must be a hex string', requestId)
           return
         }
+        logInfo('Message sign request received', { requestId, messageLength: message.length })
         const signature = await wallet.signMessage(getBytes(message))
-        sendJson(res, 200, { signature, scheme: 'eip191' })
+        sendJson(res, 200, { signature, scheme: 'eip191' }, requestId)
       } catch (err) {
-        console.error('[signer] Message sign failed:', err)
-        sendJson(res, 500, { error: err instanceof Error ? err.message : 'signMessage failed' })
+        logError('Message sign failed', { requestId, ...formatError(err) })
+        sendError(res, 500, err instanceof Error ? err.message : 'signMessage failed', requestId)
       }
       return
     }
 
-    sendJson(res, 404, { error: 'Not found' })
+    logWarn('Unknown route', { requestId, method, url })
+    sendError(res, 404, 'Not found', requestId)
   } catch (err) {
-    console.error('[signer] Unhandled request error:', err)
-    sendJson(res, 500, { error: 'Internal server error' })
+    logError('Unhandled request error', { requestId, ...formatError(err) })
+    sendError(res, 500, 'Internal server error', requestId)
   }
 })
 
-server.listen(Number(SIGNER_PORT), SIGNER_HOST, async () => {
-  const chainId = await resolveChainId()
-  console.log(
-    `[signer] Ready on http://${SIGNER_HOST}:${SIGNER_PORT} | address=${await wallet.getAddress()} chainId=${chainId}`
-  )
+server.on('clientError', (err, socket) => {
+  logWarn('Client socket error', formatError(err))
+  if (socket.writable) {
+    socket.end('HTTP/1.1 400 Bad Request\r\n\r\n')
+  }
+})
+server.on('error', err => {
+  logError('Server error', formatError(err))
+})
+
+const shutdown = signal => {
+  logWarn(`Received ${signal}, shutting down`)
+  server.close(() => {
+    logInfo('Server closed')
+    process.exit(0)
+  })
+}
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)
+
+server.listen(Number(SIGNER_PORT), SIGNER_HOST, () => {
+  ;(async () => {
+    try {
+      const chainId = await resolveChainId()
+      const address = await wallet.getAddress()
+      logInfo('Signer ready', {
+        url: `http://${SIGNER_HOST}:${SIGNER_PORT}`,
+        address,
+        chainId,
+        provider: SIGNER_RPC_URL ? 'configured' : 'default',
+      })
+    } catch (err) {
+      logError('Failed to log startup info', formatError(err))
+    }
+  })()
 })
