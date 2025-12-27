@@ -140,7 +140,7 @@ function App() {
       <div className='w-full max-w-6xl'>
         <div className='mb-4'>
           <h1 className='text-4xl md:text-5xl font-bold text-white tracking-tight drop-shadow-lg'>
-            Polygon streaming access
+            4Mica Credit Demo
           </h1>
           <p className='text-gray-200 text-base md:text-lg mt-3 leading-relaxed max-w-4xl'>
             Video is served by decentralized operators who get paid for each chunk delivered. Payments run through either
