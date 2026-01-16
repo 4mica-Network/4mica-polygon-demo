@@ -215,6 +215,7 @@ const validateGuaranteeClaims = (params) => {
     { name: 'user', type: 'address' },
     { name: 'recipient', type: 'address' },
     { name: 'tabId', type: 'uint256' },
+    { name: 'reqId', type: 'uint256' },
     { name: 'amount', type: 'uint256' },
     { name: 'asset', type: 'address' },
     { name: 'timestamp', type: 'uint64' },
@@ -224,8 +225,8 @@ const validateGuaranteeClaims = (params) => {
     throw new ValidationError(`Unexpected struct fields for ${structName}`)
   }
 
-  const { user, recipient, tabId, amount, asset, timestamp } = message || {}
-  const requiredFields = ['user', 'recipient', 'tabId', 'amount', 'asset', 'timestamp']
+  const { user, recipient, tabId, reqId, amount, asset, timestamp } = message || {}
+  const requiredFields = ['user', 'recipient', 'tabId', 'reqId', 'amount', 'asset', 'timestamp']
   if (!message || typeof message !== 'object' || requiredFields.some(field => !(field in message))) {
     throw new ValidationError('message is missing required SolGuaranteeRequestClaimsV1 fields')
   }
@@ -239,6 +240,7 @@ const validateGuaranteeClaims = (params) => {
     throw new ValidationError('message.recipient must match configured X402_PAY_TO')
   }
   ensureBigIntish(tabId, 'tabId')
+  ensureBigIntish(reqId, 'reqId')
   ensureBigIntish(amount, 'amount')
   ensureBigIntish(timestamp, 'timestamp')
 
@@ -463,8 +465,10 @@ const server = createServer(async (req, res) => {
           structNames: Object.keys(types || {}).filter(key => key !== 'EIP712Domain'),
           domainChainId: domain?.chainId,
         })
+        logInfo('Typed sign payload', { requestId, domain, types, message })
         await validateTypedDataRequest(domain, types, message)
         const signature = await wallet.signTypedData(domain, types, message)
+        logInfo('Typed sign response', { requestId, signature, scheme: 'eip712' })
         sendJson(res, 200, { signature, scheme: 'eip712' }, requestId)
       } catch (err) {
         const isValidation = err instanceof ValidationError
@@ -484,8 +488,9 @@ const server = createServer(async (req, res) => {
           sendError(res, 400, 'message must be a hex string', requestId)
           return
         }
-        logInfo('Message sign request received', { requestId, messageLength: message.length })
+        logInfo('Message sign request received', { requestId, messageLength: message.length, message })
         const signature = await wallet.signMessage(getBytes(message))
+        logInfo('Message sign response', { requestId, signature, scheme: 'eip191' })
         sendJson(res, 200, { signature, scheme: 'eip191' }, requestId)
       } catch (err) {
         logError('Message sign failed', { requestId, ...formatError(err) })

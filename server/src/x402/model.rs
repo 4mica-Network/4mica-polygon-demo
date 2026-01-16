@@ -63,6 +63,15 @@ pub struct FacilitatorTabResponse {
     pub user_address: String,
     pub recipient_address: String,
     pub asset_address: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "nextReqId",
+        alias = "next_req_id",
+        alias = "reqId",
+        alias = "req_id"
+    )]
+    pub next_req_id: Option<String>,
     pub start_timestamp: i64,
     pub ttl_seconds: i64,
 }

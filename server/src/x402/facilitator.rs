@@ -3,6 +3,7 @@ use chrono::{TimeZone, Utc};
 use http::{HeaderMap, StatusCode};
 use parking_lot::RwLock;
 use reqwest::Client;
+use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,7 +60,7 @@ pub enum FacilitatorClientError {
     JsonDeserialization {
         context: &'static str,
         #[source]
-        source: reqwest::Error,
+        source: serde_json::Error,
     },
     #[error("Unexpected HTTP status {status}: {context}: {body}")]
     HttpStatus {
@@ -122,6 +123,11 @@ impl FacilitatorClient {
                 source: e,
             })?;
 
+        log::info!(
+            "Facilitator endpoints: verify={} settle={} supported={} tabs={}",
+            verify_url, settle_url, supported_url, tab_url
+        );
+
         Ok(Self {
             client,
             base_url,
@@ -176,48 +182,10 @@ impl FacilitatorClient {
         &self,
         request: &FacilitatorTabRequestParams,
     ) -> Result<FacilitatorTabResponse, FacilitatorClientError> {
-        let tab_key = TabKey {
-            user_address: request.user_address.clone(),
-            recipient_address: request.recipient_address.clone(),
-            asset_address: request.erc20_token.clone(),
-        };
-
-        let now = Utc::now();
-
-        // Check cache first
-        {
-            let cache = self.tab_cache.read();
-            if let Some(cached) = cache.get(&tab_key) {
-                // Reuse cached tab while it is still fresh
-                if cached.expires_at > now {
-                    return Ok(cached.tab.clone());
-                }
-            }
-        }
-
         log::info!("POST /tabs to facilitator {}", self.tab_url);
         let response: FacilitatorTabResponse = self
             .post_json(&self.tab_url, "POST /tabs", &request)
             .await?;
-
-        // Expire cache at the sooner of the facilitator TTL or a 1-hour cap
-        let ttl_expiry = response
-            .start_timestamp
-            .checked_add(response.ttl_seconds)
-            .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
-        let max_cache_window = now + chrono::Duration::hours(1);
-        let expires_at = ttl_expiry.map(|ts| ts.min(max_cache_window)).unwrap_or(max_cache_window);
-
-        {
-            let mut cache = self.tab_cache.write();
-            cache.insert(
-                tab_key,
-                CachedTab {
-                    tab: response.clone(),
-                    expires_at,
-                },
-            );
-        }
 
         Ok(response)
     }
@@ -236,6 +204,14 @@ impl FacilitatorClient {
         T: serde::Serialize + ?Sized,
         R: serde::de::DeserializeOwned,
     {
+        let payload_json = serde_json::to_string(payload).unwrap_or_else(|_| "<serialize_failed>".into());
+        log::debug!(
+            "Facilitator request: context={} url={} payload={}",
+            context,
+            url,
+            payload_json
+        );
+
         let mut req = self.client.post(url.clone()).json(payload);
         for (key, value) in self.headers.iter() {
             req = req.header(key, value);
@@ -248,17 +224,23 @@ impl FacilitatorClient {
             .await
             .map_err(|e| FacilitatorClientError::Http { context, source: e })?;
 
-        if http_response.status() == StatusCode::OK {
-            http_response
-                .json::<R>()
-                .await
+        let status = http_response.status();
+        let body = http_response
+            .text()
+            .await
+            .map_err(|e| FacilitatorClientError::ResponseBodyRead { context, source: e })?;
+
+        log::debug!(
+            "Facilitator response: context={} status={} body={}",
+            context,
+            status,
+            body
+        );
+
+        if status == StatusCode::OK {
+            serde_json::from_str::<R>(&body)
                 .map_err(|e| FacilitatorClientError::JsonDeserialization { context, source: e })
         } else {
-            let status = http_response.status();
-            let body = http_response
-                .text()
-                .await
-                .map_err(|e| FacilitatorClientError::ResponseBodyRead { context, source: e })?;
             Err(FacilitatorClientError::HttpStatus {
                 context,
                 status,
@@ -280,6 +262,7 @@ impl FacilitatorClient {
     where
         R: serde::de::DeserializeOwned,
     {
+        log::debug!("Facilitator request: context={} url={}", context, url);
         let mut req = self.client.get(url.clone());
         for (key, value) in self.headers.iter() {
             req = req.header(key, value);
@@ -292,17 +275,23 @@ impl FacilitatorClient {
             .await
             .map_err(|e| FacilitatorClientError::Http { context, source: e })?;
 
-        if http_response.status() == StatusCode::OK {
-            http_response
-                .json::<R>()
-                .await
+        let status = http_response.status();
+        let body = http_response
+            .text()
+            .await
+            .map_err(|e| FacilitatorClientError::ResponseBodyRead { context, source: e })?;
+
+        log::debug!(
+            "Facilitator response: context={} status={} body={}",
+            context,
+            status,
+            body
+        );
+
+        if status == StatusCode::OK {
+            serde_json::from_str::<R>(&body)
                 .map_err(|e| FacilitatorClientError::JsonDeserialization { context, source: e })
         } else {
-            let status = http_response.status();
-            let body = http_response
-                .text()
-                .await
-                .map_err(|e| FacilitatorClientError::ResponseBodyRead { context, source: e })?;
             Err(FacilitatorClientError::HttpStatus {
                 context,
                 status,

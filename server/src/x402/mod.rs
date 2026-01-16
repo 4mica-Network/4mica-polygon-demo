@@ -1,7 +1,7 @@
 use base64::{Engine, prelude::BASE64_STANDARD};
 use log::{debug, info};
 use rust_sdk_4mica::{U256, x402::PaymentRequirements};
-use serde_json::json;
+use serde_json::{Value, json};
 
 mod config;
 mod facilitator;
@@ -111,13 +111,65 @@ fn decode_payment_header(payment_header: &str) -> Result<PaymentEnvelope, Paymen
     Ok(envelope)
 }
 
+fn encode_payment_header(envelope: &PaymentEnvelope) -> Result<String, PaymentError> {
+    let bytes = serde_json::to_vec(envelope)?;
+    Ok(BASE64_STANDARD.encode(bytes))
+}
+
+fn normalize_req_id(envelope: &mut PaymentEnvelope) -> bool {
+    let Value::Object(payload) = &mut envelope.payload else {
+        return false;
+    };
+    let Some(Value::Object(claims)) = payload.get_mut("claims") else {
+        return false;
+    };
+    if claims.contains_key("req_id") {
+        return false;
+    }
+    let Some(req_id) = claims.get("reqId").cloned() else {
+        return false;
+    };
+    claims.insert("req_id".to_string(), req_id);
+    true
+}
+
+fn extract_claim_value(payload: &Value, key: &str) -> Option<String> {
+    let Value::Object(payload_map) = payload else {
+        return None;
+    };
+    let Some(Value::Object(claims)) = payload_map.get("claims") else {
+        return None;
+    };
+    claims.get(key).map(|val| match val {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => format!("{val}"),
+    })
+}
+
 pub async fn settle_payment(
     payment_header: &str,
     accepted_payment_requirements: &[PaymentRequirements],
     facilitator: &FacilitatorClient,
     config: &X402Config,
 ) -> Result<(), PaymentError> {
-    let envelope = decode_payment_header(payment_header)?;
+    let mut envelope = decode_payment_header(payment_header)?;
+    let mut normalized_header = payment_header.to_string();
+    if normalize_req_id(&mut envelope) {
+        normalized_header = encode_payment_header(&envelope)?;
+        debug!("Normalized x402 payment header: copied reqId -> req_id");
+    }
+    if let Ok(payload_json) = serde_json::to_string(&envelope.payload) {
+        debug!("Decoded x402 envelope payload={}", payload_json);
+    }
+    let req_id = extract_claim_value(&envelope.payload, "req_id");
+    let req_id_alt = extract_claim_value(&envelope.payload, "reqId");
+    let tab_id = extract_claim_value(&envelope.payload, "tab_id")
+        .or_else(|| extract_claim_value(&envelope.payload, "tabId"));
+    debug!(
+        "Decoded x402 claims: tab_id={:?} req_id={:?} reqId={:?}",
+        tab_id, req_id, req_id_alt
+    );
     debug!(
         "Decoded x402 envelope: version={}, scheme={}, network={}",
         envelope.x402_version, envelope.scheme, envelope.network
@@ -143,10 +195,15 @@ pub async fn settle_payment(
         "Calling facilitator /settle for scheme={} network={}",
         envelope.scheme, envelope.network
     );
+    debug!(
+        "Sending payment header to facilitator: bytes={} normalized={}",
+        normalized_header.len(),
+        normalized_header != payment_header
+    );
     let settle_response = facilitator
         .settle(&FacilitatorSettleParams {
             x402_version: X402_VERSION,
-            payment_header,
+            payment_header: &normalized_header,
             payment_requirements: selected_requirement,
         })
         .await?;

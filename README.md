@@ -1,4 +1,4 @@
-# 4mica x Polygon Demo
+# 4mica Demo
 
 Pay-per-segment video streaming on Polygon-Amoy, powered by 4mica.
 

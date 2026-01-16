@@ -129,6 +129,7 @@ const buildTypedMessage = (publicParams: CorePublicParametersType, claims: Payme
       { name: 'user', type: 'address' },
       { name: 'recipient', type: 'address' },
       { name: 'tabId', type: 'uint256' },
+      { name: 'reqId', type: 'uint256' },
       { name: 'amount', type: 'uint256' },
       { name: 'asset', type: 'address' },
       { name: 'timestamp', type: 'uint64' },
@@ -144,6 +145,7 @@ const buildTypedMessage = (publicParams: CorePublicParametersType, claims: Payme
     user: claims.userAddress,
     recipient: claims.recipientAddress,
     tabId: BigInt(claims.tabId),
+    reqId: BigInt(claims.reqId),
     amount: BigInt(claims.amount),
     asset: claims.assetAddress,
     timestamp: BigInt(claims.timestamp),
@@ -152,8 +154,16 @@ const buildTypedMessage = (publicParams: CorePublicParametersType, claims: Payme
 
 const encodeEip191 = (claims: PaymentGuaranteeRequestClaimsType): Uint8Array => {
   const payload = AbiCoder.defaultAbiCoder().encode(
-    ['address', 'address', 'uint256', 'uint256', 'address', 'uint64'],
-    [claims.userAddress, claims.recipientAddress, claims.tabId, claims.amount, claims.assetAddress, claims.timestamp]
+    ['address', 'address', 'uint256', 'uint256', 'uint256', 'address', 'uint64'],
+    [
+      claims.userAddress,
+      claims.recipientAddress,
+      claims.tabId,
+      claims.reqId,
+      claims.amount,
+      claims.assetAddress,
+      claims.timestamp,
+    ]
   )
   return getBytes(payload)
 }
@@ -447,6 +457,27 @@ export const createPaymentHandler = (
     console.log('[x402] signing payment for user', userAddress)
 
     const signed = await flow.signPayment(requirements, userAddress)
+    console.log('[x402] signed claims', {
+      tabId: signed.claims.tabId?.toString?.(),
+      reqId: signed.claims.reqId?.toString?.(),
+      amount: signed.claims.amount?.toString?.(),
+      userAddress: signed.claims.userAddress,
+      recipientAddress: signed.claims.recipientAddress,
+      assetAddress: signed.claims.assetAddress,
+      timestamp: signed.claims.timestamp,
+      scheme: signed.signature?.scheme,
+      signature: signed.signature?.signature,
+    })
+    try {
+      if (typeof atob === 'function') {
+        const decoded = atob(signed.header)
+        console.log('[x402] signed header payload', decoded)
+      } else {
+        console.warn('[x402] atob not available for decoding signed header')
+      }
+    } catch (err) {
+      console.warn('[x402] failed to decode signed header payload', err)
+    }
     console.log('[x402] signed payment header length', signed.header.length)
 
     const tabInfo: PaymentTabInfo = {
