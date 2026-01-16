@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use rust_sdk_4mica::x402::PaymentRequirements;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,17 +73,4 @@ pub struct FacilitatorTabResponse {
     pub next_req_id: Option<String>,
     pub start_timestamp: i64,
     pub ttl_seconds: i64,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct TabKey {
-    pub user_address: String,
-    pub recipient_address: String,
-    pub asset_address: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct CachedTab {
-    pub tab: FacilitatorTabResponse,
-    pub expires_at: DateTime<Utc>,
 }

@@ -1,17 +1,13 @@
 /// Copied and modified from x402-axum crate: https://github.com/x402-rs/x402-rs/blob/main/crates/x402-axum/src/facilitator_client.rs
-use chrono::{TimeZone, Utc};
 use http::{HeaderMap, StatusCode};
-use parking_lot::RwLock;
 use reqwest::Client;
 use serde_json;
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
 use crate::x402::model::{
-    CachedTab, FacilitatorSettleParams, FacilitatorSettleResponse, FacilitatorTabRequestParams,
-    FacilitatorTabResponse, FacilitatorVerifyParams, FacilitatorVerifyResponse, TabKey,
+    FacilitatorSettleParams, FacilitatorSettleResponse, FacilitatorTabRequestParams,
+    FacilitatorTabResponse, FacilitatorVerifyParams, FacilitatorVerifyResponse,
 };
 
 /// A client for communicating with a remote x402 facilitator.
@@ -37,8 +33,6 @@ pub struct FacilitatorClient {
     headers: HeaderMap,
     /// Optional request timeout
     timeout: Option<Duration>,
-    /// Cache for tabs
-    tab_cache: Arc<RwLock<HashMap<TabKey, CachedTab>>>,
 }
 
 /// Errors that can occur while interacting with a remote facilitator.
@@ -125,7 +119,10 @@ impl FacilitatorClient {
 
         log::info!(
             "Facilitator endpoints: verify={} settle={} supported={} tabs={}",
-            verify_url, settle_url, supported_url, tab_url
+            verify_url,
+            settle_url,
+            supported_url,
+            tab_url
         );
 
         Ok(Self {
@@ -137,7 +134,6 @@ impl FacilitatorClient {
             tab_url,
             headers: HeaderMap::new(),
             timeout: None,
-            tab_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -204,7 +200,8 @@ impl FacilitatorClient {
         T: serde::Serialize + ?Sized,
         R: serde::de::DeserializeOwned,
     {
-        let payload_json = serde_json::to_string(payload).unwrap_or_else(|_| "<serialize_failed>".into());
+        let payload_json =
+            serde_json::to_string(payload).unwrap_or_else(|_| "<serialize_failed>".into());
         log::debug!(
             "Facilitator request: context={} url={} payload={}",
             context,
