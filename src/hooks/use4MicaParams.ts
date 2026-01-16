@@ -21,8 +21,15 @@ export const use4MicaParams = (
       if (!isConnected) return
       setParamsLoading(true)
       try {
-        const rpc = new fourMica.RpcProxy(config.rpcUrl, undefined, boundFetch as any)
-        const p = await rpc.getPublicParams()
+        const url = `${config.signerServiceUrl.replace(/\/+$/, '')}/params`
+        const resp = await boundFetch(url, { method: 'GET' })
+        const text = await resp.text()
+        if (!resp.ok) {
+          throw new Error(text || `params request failed with ${resp.status}`)
+        }
+        const parsed = text ? JSON.parse(text) : {}
+        const payload = (parsed?.params ?? parsed) as Record<string, unknown>
+        const p = fourMica.CorePublicParameters.fromRpc(payload)
         if (active) setCoreParams(p)
       } catch (err) {
         appendLog(`Failed to load 4mica params: ${err instanceof Error ? err.message : String(err)}`, 'error')

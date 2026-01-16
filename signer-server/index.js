@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { createServer } from 'node:http'
 import { JsonRpcProvider, Wallet, Contract, getBytes, isHexString, isAddress } from 'ethers'
-import { Client, ConfigBuilder, ValidationError, validateGuaranteeTypedData } from 'sdk-4mica'
+import { Client, ConfigBuilder, PaymentRequirements, ValidationError, X402Flow, validateGuaranteeTypedData } from 'sdk-4mica'
 
 const {
   SIGNER_PRIVATE_KEY,
@@ -175,6 +175,28 @@ const resolveChainId = async () => {
 
 const normalizeAddress = addr => (typeof addr === 'string' ? addr.toLowerCase() : '')
 
+const serializePublicParams = params => {
+  const rawKey = params?.publicKey
+  let publicKey = ''
+  if (typeof rawKey === 'string') {
+    publicKey = rawKey
+  } else if (rawKey instanceof Uint8Array) {
+    publicKey = `0x${Buffer.from(rawKey).toString('hex')}`
+  } else if (Array.isArray(rawKey)) {
+    publicKey = `0x${Buffer.from(Uint8Array.from(rawKey)).toString('hex')}`
+  }
+  if (!publicKey) publicKey = '0x'
+
+  return {
+    publicKey,
+    contractAddress: params?.contractAddress || '',
+    ethereumHttpRpcUrl: params?.ethereumHttpRpcUrl || '',
+    eip712Name: params?.eip712Name || '',
+    eip712Version: params?.eip712Version || '',
+    chainId: params?.chainId ?? null,
+  }
+}
+
 const fieldsMatch = (actual, expected) => {
   if (!Array.isArray(actual) || actual.length !== expected.length) return false
   const norm = arr => arr.map(item => `${item.name}:${item.type}`).sort()
@@ -321,6 +343,19 @@ const server = createServer(async (req, res) => {
       return
     }
 
+    if (method === 'GET' && url === '/params') {
+      try {
+        const client = await ensureSdkClient()
+        const params = serializePublicParams(client.params)
+        sendJson(res, 200, { params }, requestId)
+        logInfo('Params request served', { requestId })
+      } catch (err) {
+        logError('Params request failed', { requestId, ...formatError(err) })
+        sendError(res, 500, err instanceof Error ? err.message : 'params request failed', requestId)
+      }
+      return
+    }
+
     if (method === 'GET' && url.startsWith('/collateral')) {
       try {
         const [, query] = url.split('?', 2)
@@ -404,6 +439,57 @@ const server = createServer(async (req, res) => {
       } catch (err) {
         logError('Collateral fetch failed', { requestId, ...formatError(err) })
         sendError(res, 500, err instanceof Error ? err.message : 'collateral fetch failed', requestId)
+      }
+      return
+    }
+
+    if (method === 'POST' && url === '/x402/sign') {
+      try {
+        const body = await parseBody(req)
+        const { paymentRequirements, userAddress } = body || {}
+        if (!paymentRequirements || typeof paymentRequirements !== 'object') {
+          sendError(res, 400, 'paymentRequirements is required', requestId)
+          return
+        }
+
+        const client = await ensureSdkClient()
+        const flow = X402Flow.fromClient(client)
+        const requirements = PaymentRequirements.fromRaw(paymentRequirements)
+        const signerAddress = await walletAddressPromise
+        if (userAddress && normalizeAddress(userAddress) !== normalizeAddress(signerAddress)) {
+          sendError(res, 400, 'userAddress does not match signer address', requestId)
+          return
+        }
+
+        const payment = await flow.signPayment(requirements, signerAddress)
+        const claims = payment.claims
+        const payload = {
+          header: payment.header,
+          claims: {
+            userAddress: claims.userAddress,
+            recipientAddress: claims.recipientAddress,
+            tabId: claims.tabId.toString(),
+            reqId: claims.reqId.toString(),
+            amount: claims.amount.toString(),
+            assetAddress: claims.assetAddress,
+            timestamp: claims.timestamp,
+          },
+          signature: payment.signature,
+        }
+        sendJson(res, 200, payload, requestId)
+        logInfo('x402 sign request served', {
+          requestId,
+          scheme: requirements.scheme,
+          network: requirements.network,
+          tabId: payload.claims.tabId,
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'x402 sign failed'
+        const status = err instanceof ValidationError || (err instanceof Error && err.name === 'X402Error') ? 400 : 500
+        if (status === 500) {
+          logError('x402 sign failed', { requestId, ...formatError(err) })
+        }
+        sendError(res, status, message, requestId)
       }
       return
     }

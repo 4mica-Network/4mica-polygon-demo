@@ -39,28 +39,32 @@ export type PaymentTabInfo = {
   symbol: string
 }
 
-const {
-  PaymentRequirements,
-  RpcProxy,
-  X402Flow,
-  CorePublicParameters,
-  SigningScheme,
-  PaymentGuaranteeRequestClaims,
-  buildGuaranteeTypedData,
-  encodeGuaranteeEip191,
-  validateGuaranteeSigningContext,
-} = fourMica
+const { PaymentRequirements } = fourMica
 
-type CorePublicParametersType = InstanceType<typeof CorePublicParameters>
-type RpcProxyType = InstanceType<typeof RpcProxy>
-type PaymentGuaranteeRequestClaimsType = InstanceType<typeof PaymentGuaranteeRequestClaims>
-type SigningSchemeType = (typeof SigningScheme)[keyof typeof SigningScheme]
 type PaymentRequirementsType = InstanceType<typeof PaymentRequirements>
 
 type SignerResolver = () => Promise<Signer | null>
 
-let params: CorePublicParametersType | null = null
-let rpcProxy: RpcProxyType | null = null
+type SdkClaimsResponse = {
+  userAddress: string
+  recipientAddress: string
+  tabId: string
+  reqId: string
+  amount: string
+  assetAddress: string
+  timestamp: number
+}
+
+type SdkSignResponse = {
+  header: string
+  claims?: SdkClaimsResponse
+}
+
+type CoreParamsSummary = {
+  chainId?: number
+}
+
+let coreParams: CoreParamsSummary | null = null
 
 const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const f = globalThis.fetch as any
@@ -70,13 +74,45 @@ const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   return f.call(globalThis, input, init)
 }
 
-const ensureParams = async (): Promise<CorePublicParametersType> => {
-  if (params) return params
-  if (!rpcProxy) {
-    rpcProxy = new RpcProxy(config.rpcUrl, undefined, boundFetch as any)
+const signerBaseUrl = () => config.signerServiceUrl.replace(/\/+$/, '')
+
+const ensureCoreParams = async (): Promise<CoreParamsSummary | null> => {
+  if (coreParams) return coreParams
+  const url = `${signerBaseUrl()}/params`
+  try {
+    const resp = await boundFetch(url, { method: 'GET' })
+    const text = await resp.text()
+    if (!resp.ok) {
+      throw new Error(text || `params request failed with ${resp.status}`)
+    }
+    const parsed = text ? JSON.parse(text) : {}
+    const payload = (parsed?.params ?? parsed) as CoreParamsSummary
+    coreParams = payload
+    return coreParams
+  } catch (err) {
+    console.warn('[x402] failed to load core params from signer service', err)
+    return null
   }
-  params = await rpcProxy.getPublicParams()
-  return params
+}
+
+const signWithSdkService = async (
+  requirements: PaymentRequirementsType
+): Promise<SdkSignResponse> => {
+  const url = `${signerBaseUrl()}/x402/sign`
+  const resp = await boundFetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ paymentRequirements: requirements.toPayload() }),
+  })
+  const text = await resp.text()
+  if (!resp.ok) {
+    throw new Error(text || `signing request failed with ${resp.status}`)
+  }
+  const data = text ? JSON.parse(text) : {}
+  if (!data?.header) {
+    throw new Error('Signer service returned no payment header')
+  }
+  return data as SdkSignResponse
 }
 
 const parseAmountRequired = (value: unknown): bigint => {
@@ -126,55 +162,6 @@ const resolveAssetMeta = async (
 
 const formatAmountDisplay = (amount: bigint, decimals: number, symbol: string) =>
   `${formatUnits(amount, decimals)} ${symbol}`
-
-const resolveSigner = async (
-  getWalletSigner: SignerResolver
-): Promise<{ signer: Signer; address: string; source: 'wallet' | 'env' }> => {
-  const walletSigner = await getWalletSigner()
-  if (walletSigner) {
-    const address = await walletSigner.getAddress()
-    return { signer: walletSigner, address, source: 'wallet' }
-  }
-
-  throw new Error('No signer available. Start the signer service or connect a wallet.')
-}
-
-const buildFlow = async (getWalletSigner: SignerResolver) => {
-  const publicParams = await ensureParams()
-  const { signer, address, source } = await resolveSigner(getWalletSigner)
-
-  const flowSigner = {
-    signPayment: async (claims: PaymentGuaranteeRequestClaimsType, scheme: SigningSchemeType) => {
-      const network = await signer.provider?.getNetwork?.()
-      validateGuaranteeSigningContext(publicParams, claims, {
-        signerAddress: address,
-        signerChainId: network ? Number(network.chainId) : undefined,
-      })
-
-      if (scheme === SigningScheme.EIP712) {
-        const typed = buildGuaranteeTypedData(publicParams, claims)
-        const signature = await (signer as any).signTypedData(
-          typed.domain,
-          { SolGuaranteeRequestClaimsV1: typed.types.SolGuaranteeRequestClaimsV1 },
-          typed.message
-        )
-        return { signature, scheme }
-      }
-
-      if (scheme === SigningScheme.EIP191) {
-        const message = encodeGuaranteeEip191(claims)
-        const signature = await signer.signMessage(message)
-        return { signature, scheme }
-      }
-
-      throw new Error(`Unsupported signing scheme: ${scheme}`)
-    },
-  }
-
-  const flow = new X402Flow(flowSigner as any, boundFetch as any)
-  console.log('[x402] initialized flow for', address, 'rpc=', config.rpcUrl, 'source=', source)
-  return { flow, userAddress: address, signer, publicParams }
-}
 
 const parseRequirements = (
   raw: string,
@@ -353,7 +340,8 @@ export const createPaymentHandler = (
     const scheme = String((requirements as any).scheme ?? '').toLowerCase()
     const isDirectScheme = scheme === 'x402' || scheme === 'exact'
 
-    const { flow, userAddress, signer, publicParams } = await buildFlow(getWalletSigner)
+    const walletSigner = await getWalletSigner()
+    const signerAddress = walletSigner ? await walletSigner.getAddress() : null
 
     const amountRaw = parseAmountRequired((requirements as any).maxAmountRequired ?? 0n)
     const assetAddr = String((requirements as any).asset ?? '')
@@ -362,7 +350,7 @@ export const createPaymentHandler = (
       assetAddr && config.defaultTokenAddress && assetAddr.toLowerCase() === config.defaultTokenAddress.toLowerCase()
     const explicitDecimals = Number((requirements as any)?.assetDecimals ?? (requirements as any)?.decimals)
 
-    const assetMeta = signer.provider ? await resolveAssetMeta(signer.provider, assetAddr) : null
+    const assetMeta = walletSigner?.provider ? await resolveAssetMeta(walletSigner.provider, assetAddr) : null
     const decimals =
       assetMeta?.decimals ??
       (Number.isFinite(explicitDecimals) && explicitDecimals > 0 ? Number(explicitDecimals) : isDefaultAsset ? 6 : 18)
@@ -383,20 +371,24 @@ export const createPaymentHandler = (
         offered: schemeInfo.offered,
         chosen: schemeInfo.chosen,
       })
+      if (!walletSigner || !signerAddress) {
+        throw new Error('No signer available. Start the signer service or connect a wallet.')
+      }
+      const coreParams = await ensureCoreParams()
       const maxTimeoutSeconds = Number((requirements as any).maxTimeoutSeconds ?? 3600)
       const tokenName = assetMeta?.name ?? 'USDC'
       const tokenVersion = assetMeta?.version ?? '2'
 
       const direct = await settleDirectPayment(
-        signer,
-        userAddress,
+        walletSigner,
+        signerAddress,
         amountRaw,
         assetAddr,
         payTo,
         requirements.network,
         decimals,
         symbol,
-        publicParams?.chainId,
+        coreParams?.chainId,
         maxTimeoutSeconds,
         tokenName,
         tokenVersion
@@ -409,20 +401,9 @@ export const createPaymentHandler = (
       }
     }
 
-    console.log('[x402] signing payment for user', userAddress)
+    console.log('[x402] signing payment via SDK service')
 
-    const signed = await flow.signPayment(requirements, userAddress)
-    console.log('[x402] signed claims', {
-      tabId: signed.claims.tabId?.toString?.(),
-      reqId: signed.claims.reqId?.toString?.(),
-      amount: signed.claims.amount?.toString?.(),
-      userAddress: signed.claims.userAddress,
-      recipientAddress: signed.claims.recipientAddress,
-      assetAddress: signed.claims.assetAddress,
-      timestamp: signed.claims.timestamp,
-      scheme: signed.signature?.scheme,
-      signature: signed.signature?.signature,
-    })
+    const signed = await signWithSdkService(requirements)
     try {
       if (typeof atob === 'function') {
         const decoded = atob(signed.header)
@@ -435,16 +416,19 @@ export const createPaymentHandler = (
     }
     console.log('[x402] signed payment header length', signed.header.length)
 
-    const tabInfo: PaymentTabInfo = {
-      tabId: signed.claims.tabId,
-      assetAddress: signed.claims.assetAddress,
-      recipientAddress: signed.claims.recipientAddress,
-      amountRaw,
-      amountDisplay,
-      decimals,
-      symbol,
+    let tabInfo: PaymentTabInfo | undefined
+    if (signed.claims) {
+      tabInfo = {
+        tabId: BigInt(signed.claims.tabId),
+        assetAddress: signed.claims.assetAddress,
+        recipientAddress: signed.claims.recipientAddress,
+        amountRaw,
+        amountDisplay,
+        decimals,
+        symbol,
+      }
+      onTabReady?.(tabInfo)
     }
-    onTabReady?.(tabInfo)
 
     return { header: signed.header, amountDisplay, tabInfo }
   }
