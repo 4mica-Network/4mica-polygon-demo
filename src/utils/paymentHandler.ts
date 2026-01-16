@@ -1,6 +1,6 @@
 import * as fourMica from 'sdk-4mica'
 import { config } from '../config/env'
-import { Signer, AbiCoder, getBytes, formatUnits, Contract, ZeroAddress, isAddress } from 'ethers'
+import { Signer, formatUnits, Contract, ZeroAddress, isAddress } from 'ethers'
 import { settleDirectPayment } from './exact'
 
 type XhrOptions = {
@@ -39,8 +39,17 @@ export type PaymentTabInfo = {
   symbol: string
 }
 
-const { PaymentRequirements, RpcProxy, X402Flow, CorePublicParameters, SigningScheme, PaymentGuaranteeRequestClaims } =
-  fourMica
+const {
+  PaymentRequirements,
+  RpcProxy,
+  X402Flow,
+  CorePublicParameters,
+  SigningScheme,
+  PaymentGuaranteeRequestClaims,
+  buildGuaranteeTypedData,
+  encodeGuaranteeEip191,
+  validateGuaranteeSigningContext,
+} = fourMica
 
 type CorePublicParametersType = InstanceType<typeof CorePublicParameters>
 type RpcProxyType = InstanceType<typeof RpcProxy>
@@ -118,56 +127,6 @@ const resolveAssetMeta = async (
 const formatAmountDisplay = (amount: bigint, decimals: number, symbol: string) =>
   `${formatUnits(amount, decimals)} ${symbol}`
 
-const buildTypedMessage = (publicParams: CorePublicParametersType, claims: PaymentGuaranteeRequestClaimsType) => ({
-  types: {
-    EIP712Domain: [
-      { name: 'name', type: 'string' },
-      { name: 'version', type: 'string' },
-      { name: 'chainId', type: 'uint256' },
-    ],
-    SolGuaranteeRequestClaimsV1: [
-      { name: 'user', type: 'address' },
-      { name: 'recipient', type: 'address' },
-      { name: 'tabId', type: 'uint256' },
-      { name: 'reqId', type: 'uint256' },
-      { name: 'amount', type: 'uint256' },
-      { name: 'asset', type: 'address' },
-      { name: 'timestamp', type: 'uint64' },
-    ],
-  },
-  primaryType: 'SolGuaranteeRequestClaimsV1',
-  domain: {
-    name: publicParams.eip712Name,
-    version: publicParams.eip712Version,
-    chainId: publicParams.chainId,
-  },
-  message: {
-    user: claims.userAddress,
-    recipient: claims.recipientAddress,
-    tabId: BigInt(claims.tabId),
-    reqId: BigInt(claims.reqId),
-    amount: BigInt(claims.amount),
-    asset: claims.assetAddress,
-    timestamp: BigInt(claims.timestamp),
-  },
-})
-
-const encodeEip191 = (claims: PaymentGuaranteeRequestClaimsType): Uint8Array => {
-  const payload = AbiCoder.defaultAbiCoder().encode(
-    ['address', 'address', 'uint256', 'uint256', 'uint256', 'address', 'uint64'],
-    [
-      claims.userAddress,
-      claims.recipientAddress,
-      claims.tabId,
-      claims.reqId,
-      claims.amount,
-      claims.assetAddress,
-      claims.timestamp,
-    ]
-  )
-  return getBytes(payload)
-}
-
 const resolveSigner = async (
   getWalletSigner: SignerResolver
 ): Promise<{ signer: Signer; address: string; source: 'wallet' | 'env' }> => {
@@ -186,18 +145,14 @@ const buildFlow = async (getWalletSigner: SignerResolver) => {
 
   const flowSigner = {
     signPayment: async (claims: PaymentGuaranteeRequestClaimsType, scheme: SigningSchemeType) => {
-      const normalizedAddress = address.toLowerCase()
-      if (normalizedAddress !== claims.userAddress.toLowerCase()) {
-        throw new Error(`Signer address mismatch. Wallet=${address}, claims.userAddress=${claims.userAddress}`)
-      }
-
       const network = await signer.provider?.getNetwork?.()
-      if (network && Number(network.chainId) !== Number(publicParams.chainId)) {
-        throw new Error(`Wrong network. Switch wallet to chain ${publicParams.chainId}. Current: ${network.chainId}`)
-      }
+      validateGuaranteeSigningContext(publicParams, claims, {
+        signerAddress: address,
+        signerChainId: network ? Number(network.chainId) : undefined,
+      })
 
       if (scheme === SigningScheme.EIP712) {
-        const typed = buildTypedMessage(publicParams, claims)
+        const typed = buildGuaranteeTypedData(publicParams, claims)
         const signature = await (signer as any).signTypedData(
           typed.domain,
           { SolGuaranteeRequestClaimsV1: typed.types.SolGuaranteeRequestClaimsV1 },
@@ -207,7 +162,7 @@ const buildFlow = async (getWalletSigner: SignerResolver) => {
       }
 
       if (scheme === SigningScheme.EIP191) {
-        const message = encodeEip191(claims)
+        const message = encodeGuaranteeEip191(claims)
         const signature = await signer.signMessage(message)
         return { signature, scheme }
       }

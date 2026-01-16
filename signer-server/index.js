@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { createServer } from 'node:http'
 import { JsonRpcProvider, Wallet, Contract, getBytes, isHexString, isAddress } from 'ethers'
-import { Client, ConfigBuilder } from 'sdk-4mica'
+import { Client, ConfigBuilder, ValidationError, validateGuaranteeTypedData } from 'sdk-4mica'
 
 const {
   SIGNER_PRIVATE_KEY,
@@ -173,13 +173,6 @@ const resolveChainId = async () => {
   return 80002
 }
 
-class ValidationError extends Error {
-  constructor(message) {
-    super(message)
-    this.name = 'ValidationError'
-  }
-}
-
 const normalizeAddress = addr => (typeof addr === 'string' ? addr.toLowerCase() : '')
 
 const fieldsMatch = (actual, expected) => {
@@ -206,45 +199,6 @@ const ensureChainId = (domain, expectedChainId) => {
   if (parsed !== Number(expectedChainId)) {
     throw new ValidationError(`domain.chainId mismatch; expected ${expectedChainId}, got ${parsed}`)
   }
-}
-
-const validateGuaranteeClaims = (params) => {
-  const { domain, types, message, expectedChainId, signerAddress } = params
-  const structName = 'SolGuaranteeRequestClaimsV1'
-  const expectedFields = [
-    { name: 'user', type: 'address' },
-    { name: 'recipient', type: 'address' },
-    { name: 'tabId', type: 'uint256' },
-    { name: 'reqId', type: 'uint256' },
-    { name: 'amount', type: 'uint256' },
-    { name: 'asset', type: 'address' },
-    { name: 'timestamp', type: 'uint64' },
-  ]
-
-  if (!fieldsMatch(types[structName], expectedFields)) {
-    throw new ValidationError(`Unexpected struct fields for ${structName}`)
-  }
-
-  const { user, recipient, tabId, reqId, amount, asset, timestamp } = message || {}
-  const requiredFields = ['user', 'recipient', 'tabId', 'reqId', 'amount', 'asset', 'timestamp']
-  if (!message || typeof message !== 'object' || requiredFields.some(field => !(field in message))) {
-    throw new ValidationError('message is missing required SolGuaranteeRequestClaimsV1 fields')
-  }
-  if (!isAddress(user) || !isAddress(recipient) || !isAddress(asset)) {
-    throw new ValidationError('user, recipient, and asset must be valid addresses')
-  }
-  if (normalizeAddress(user) !== normalizeAddress(signerAddress)) {
-    throw new ValidationError('message.user must match signer address')
-  }
-  if (normalizeAddress(recipient) !== normalizeAddress(expectedPayTo)) {
-    throw new ValidationError('message.recipient must match configured X402_PAY_TO')
-  }
-  ensureBigIntish(tabId, 'tabId')
-  ensureBigIntish(reqId, 'reqId')
-  ensureBigIntish(amount, 'amount')
-  ensureBigIntish(timestamp, 'timestamp')
-
-  ensureChainId(domain, expectedChainId)
 }
 
 const validateTransferWithAuthorization = (params) => {
@@ -295,24 +249,26 @@ const validateTypedDataRequest = async (domain, types, message) => {
   if (!types || typeof types !== 'object') throw new ValidationError('types are required')
   if (!message || typeof message !== 'object') throw new ValidationError('message is required')
 
-  const supportedValidators = {
-    SolGuaranteeRequestClaimsV1: validateGuaranteeClaims,
-    TransferWithAuthorization: validateTransferWithAuthorization,
-  }
-
   const requestedTypes = Object.keys(types).filter(key => key !== 'EIP712Domain')
   if (requestedTypes.length !== 1) {
     throw new ValidationError('Unsupported typed data structure requested')
   }
 
   const structName = requestedTypes[0]
-  const validator = supportedValidators[structName]
-  if (!validator) {
-    throw new ValidationError(`Struct ${structName} is not allowed for signing`)
+  const [expectedChainId, signerAddress] = await Promise.all([resolveChainId(), walletAddressPromise])
+  if (structName === 'SolGuaranteeRequestClaimsV1') {
+    validateGuaranteeTypedData(
+      { domain, types, message },
+      { expectedChainId, expectedSigner: signerAddress, expectedRecipient: expectedPayTo }
+    )
+    return
+  }
+  if (structName === 'TransferWithAuthorization') {
+    validateTransferWithAuthorization({ domain, types, message, expectedChainId, signerAddress })
+    return
   }
 
-  const [expectedChainId, signerAddress] = await Promise.all([resolveChainId(), walletAddressPromise])
-  validator({ domain, types, message, expectedChainId, signerAddress })
+  throw new ValidationError(`Struct ${structName} is not allowed for signing`)
 }
 
 const server = createServer(async (req, res) => {
