@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import * as fourMica from 'sdk-4mica'
+import * as fourMica from '@4mica/sdk'
 import { useWallet } from '../context/WalletContext'
 import { use4MicaParams } from './use4MicaParams'
 

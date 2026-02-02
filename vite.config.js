@@ -9,12 +9,12 @@ export default defineConfig({
     dedupe: ['react', 'react-dom', 'react/jsx-runtime'],
   },
   optimizeDeps: {
-    include: ['sdk-4mica'],
+    include: ['@4mica/sdk'],
     dedupe: ['react', 'react-dom', 'react/jsx-runtime'],
   },
   build: {
     commonjsOptions: {
-      include: [/sdk-4mica/, /node_modules/],
+      include: [/@4mica\/sdk/, /node_modules/],
     },
   },
   server: {

@@ -1,4 +1,4 @@
-import * as fourMica from 'sdk-4mica'
+import type { PaymentRequirementsV1, PaymentRequirementsV2, X402PaymentRequired } from '@4mica/sdk'
 import { config } from '../config/env'
 import { Signer, formatUnits, Contract, ZeroAddress, isAddress } from 'ethers'
 import { settleDirectPayment } from './exact'
@@ -39,9 +39,22 @@ export type PaymentTabInfo = {
   symbol: string
 }
 
-const { PaymentRequirements } = fourMica
+export type PaymentHeaderResult = {
+  header: string
+  headerName: string
+  amountDisplay: string
+  txHash?: string
+  tabInfo?: PaymentTabInfo
+}
 
-type PaymentRequirementsType = InstanceType<typeof PaymentRequirements>
+type PaymentRequirementsType = PaymentRequirementsV1 | PaymentRequirementsV2
+
+type PaymentSelection = {
+  version: number
+  requirements: PaymentRequirementsType
+  schemeInfo: SchemeResolvedInfo
+  paymentRequired?: X402PaymentRequired
+}
 
 type SignerResolver = () => Promise<Signer | null>
 
@@ -74,6 +87,38 @@ const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {
   return f.call(globalThis, input, init)
 }
 
+const decodeBase64 = (value: string): string => {
+  if (typeof atob === 'function') return atob(value)
+  const buf = (globalThis as any).Buffer
+  if (buf?.from) return buf.from(value, 'base64').toString('utf-8')
+  throw new Error('No base64 decoder available')
+}
+
+const decodeBase64Json = <T,>(value: string): T => {
+  const decoded = decodeBase64(value)
+  return JSON.parse(decoded) as T
+}
+
+const getHeaderValue = (response: Response, name: string): string | null => {
+  if (!response) return null
+  const lower = name.toLowerCase()
+  const headersObj = (response as any).headers
+  if (headersObj?.get && typeof headersObj.get === 'function') {
+    return headersObj.get(name) ?? headersObj.get(lower)
+  }
+  if (typeof (response as any).getResponseHeader === 'function') {
+    return (response as any).getResponseHeader(name)
+  }
+  if (headersObj && typeof headersObj === 'object') {
+    const direct = headersObj[name] ?? headersObj[lower]
+    if (typeof direct === 'string') return direct
+    for (const [key, value] of Object.entries(headersObj)) {
+      if (key.toLowerCase() === lower && typeof value === 'string') return value
+    }
+  }
+  return null
+}
+
 const signerBaseUrl = () => config.signerServiceUrl.replace(/\/+$/, '')
 
 const ensureCoreParams = async (): Promise<CoreParamsSummary | null> => {
@@ -102,7 +147,28 @@ const signWithSdkService = async (
   const resp = await boundFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ paymentRequirements: requirements.toPayload() }),
+    body: JSON.stringify({ paymentRequirements: requirements }),
+  })
+  const text = await resp.text()
+  if (!resp.ok) {
+    throw new Error(text || `signing request failed with ${resp.status}`)
+  }
+  const data = text ? JSON.parse(text) : {}
+  if (!data?.header) {
+    throw new Error('Signer service returned no payment header')
+  }
+  return data as SdkSignResponse
+}
+
+const signWithSdkServiceV2 = async (
+  paymentRequired: X402PaymentRequired,
+  accepted: PaymentRequirementsV2
+): Promise<SdkSignResponse> => {
+  const url = `${signerBaseUrl()}/x402/sign`
+  const resp = await boundFetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ paymentRequired, accepted }),
   })
   const text = await resp.text()
   if (!resp.ok) {
@@ -121,6 +187,40 @@ const parseAmountRequired = (value: unknown): bigint => {
   } catch {
     return 0n
   }
+}
+
+const normalizePaymentRequirements = (raw: Record<string, unknown>): PaymentRequirementsType => {
+  const normalized: Record<string, any> = { ...raw }
+  if (normalized.maxAmountRequired === undefined && normalized.max_amount_required !== undefined) {
+    normalized.maxAmountRequired = normalized.max_amount_required
+  }
+  if (normalized.amount === undefined && normalized.amount_required !== undefined) {
+    normalized.amount = normalized.amount_required
+  }
+  if (normalized.payTo === undefined && normalized.pay_to !== undefined) {
+    normalized.payTo = normalized.pay_to
+  }
+  if (normalized.maxTimeoutSeconds === undefined && normalized.max_timeout_seconds !== undefined) {
+    normalized.maxTimeoutSeconds = normalized.max_timeout_seconds
+  }
+  if (normalized.mimeType === undefined && normalized.mime_type !== undefined) {
+    normalized.mimeType = normalized.mime_type
+  }
+  if (normalized.outputSchema === undefined && normalized.output_schema !== undefined) {
+    normalized.outputSchema = normalized.output_schema
+  }
+  if (normalized.asset === undefined && normalized.asset_address !== undefined) {
+    normalized.asset = normalized.asset_address
+  }
+  const extraRaw = normalized.extra
+  if (extraRaw && typeof extraRaw === 'object' && !Array.isArray(extraRaw)) {
+    const extra: Record<string, unknown> = { ...(extraRaw as Record<string, unknown>) }
+    if (extra.tabEndpoint === undefined && extra.tab_endpoint !== undefined) {
+      extra.tabEndpoint = extra.tab_endpoint
+    }
+    normalized.extra = extra
+  }
+  return normalized as PaymentRequirementsType
 }
 
 const resolveAssetMeta = async (
@@ -163,7 +263,7 @@ const resolveAssetMeta = async (
 const formatAmountDisplay = (amount: bigint, decimals: number, symbol: string) =>
   `${formatUnits(amount, decimals)} ${symbol}`
 
-const parseRequirements = (
+const parseRequirementsV1 = (
   raw: string,
   preferredScheme: PaymentScheme
 ): { requirements: PaymentRequirementsType; schemeInfo: SchemeResolvedInfo } => {
@@ -210,7 +310,63 @@ const parseRequirements = (
   }
 
   return {
-    requirements: PaymentRequirements.fromRaw(choice),
+    requirements: normalizePaymentRequirements(choice),
+    schemeInfo,
+  }
+}
+
+const parseRequirementsV2 = (
+  paymentRequired: X402PaymentRequired,
+  preferredScheme: PaymentScheme
+): { requirements: PaymentRequirementsType; schemeInfo: SchemeResolvedInfo } => {
+  if (!Array.isArray(paymentRequired.accepts) || paymentRequired.accepts.length === 0) {
+    throw new Error('paymentRequirements missing from 402 response')
+  }
+
+  const normalizeScheme = (candidate: unknown) => {
+    if (typeof candidate === 'object' && candidate !== null && 'scheme' in (candidate as any)) {
+      const scheme = (candidate as any).scheme
+      if (typeof scheme === 'string') return scheme.toLowerCase()
+    }
+    return ''
+  }
+
+  const offered = paymentRequired.accepts.map(normalizeScheme)
+  const normalizedPreferred = preferredScheme.toLowerCase()
+  const directAliases = ['x402', 'exact']
+  const matchesPreferred = (candidate: unknown) => {
+    const scheme = normalizeScheme(candidate)
+    if (!scheme) return false
+    if (scheme === normalizedPreferred) return true
+    if (normalizedPreferred === 'x402' && directAliases.includes(scheme)) return true
+    return false
+  }
+
+  const directChoice =
+    normalizedPreferred === 'x402'
+      ? paymentRequired.accepts.find(r => directAliases.includes(normalizeScheme(r)))
+      : undefined
+  const exact = paymentRequired.accepts.find(matchesPreferred)
+  const fallback4mica =
+    normalizedPreferred === 'x402'
+      ? undefined
+      : paymentRequired.accepts.find(r => normalizeScheme(r).includes('4mica'))
+  const choice = (directChoice ?? exact ?? fallback4mica ?? paymentRequired.accepts[0]) as Record<string, unknown>
+  const chosen = normalizeScheme(choice) || String((choice as any).scheme ?? '')
+
+  if (normalizedPreferred === 'x402' && !directAliases.includes(chosen)) {
+    throw new Error('Direct x402 settlement not offered by server')
+  }
+
+  const schemeInfo: SchemeResolvedInfo = {
+    preferred: preferredScheme,
+    chosen,
+    offered,
+    usedFallback: !matchesPreferred(choice),
+  }
+
+  return {
+    requirements: normalizePaymentRequirements(choice),
     schemeInfo,
   }
 }
@@ -267,9 +423,28 @@ const getPaymentRequirements = async (
   options: XhrOptions,
   body: any,
   preferredScheme: PaymentScheme
-): Promise<{ requirements: PaymentRequirementsType; schemeInfo: SchemeResolvedInfo }> => {
+): Promise<PaymentSelection> => {
+  const paymentRequiredHeader = getHeaderValue(response, 'payment-required')
+  if (paymentRequiredHeader) {
+    try {
+      const paymentRequired = decodeBase64Json<X402PaymentRequired>(paymentRequiredHeader)
+      const { requirements, schemeInfo } = parseRequirementsV2(paymentRequired, preferredScheme)
+      return {
+        version: 2,
+        requirements,
+        schemeInfo,
+        paymentRequired,
+      }
+    } catch (err) {
+      console.warn('[x402] failed to use v2 payment-required header; falling back to body', err)
+    }
+  }
+
   const inline = coerceBodyText(response, body)
-  if (inline) return parseRequirements(inline, preferredScheme)
+  if (inline) {
+    const { requirements, schemeInfo } = parseRequirementsV1(inline, preferredScheme)
+    return { version: 1, requirements, schemeInfo }
+  }
 
   const url = (response as any)._proxiedUri ?? (response as any).responseURL ?? (response as any).url ?? options.uri
   if (!url) throw new Error('No payment details found in 402 response')
@@ -279,7 +454,8 @@ const getPaymentRequirements = async (
   if (!fetched) {
     throw new Error('No payment details found in 402 response')
   }
-  return parseRequirements(fetched, preferredScheme)
+  const { requirements, schemeInfo } = parseRequirementsV1(fetched, preferredScheme)
+  return { version: 1, requirements, schemeInfo }
 }
 
 const withFixedTabEndpoint = (requirements: PaymentRequirementsType): PaymentRequirementsType => {
@@ -322,12 +498,12 @@ export const createPaymentHandler = (
     options: XhrOptions,
     body?: any,
     onAmountReady?: (amountDisplay: string) => void
-  ): Promise<{ header: string; amountDisplay: string; txHash?: string; tabInfo?: PaymentTabInfo }> => {
+  ): Promise<PaymentHeaderResult> => {
     console.log('[x402] handlePayment: received 402')
 
     const preferredScheme = getPreferredScheme?.() ?? '4mica-credit'
 
-    const { requirements: rawRequirements, schemeInfo } = await getPaymentRequirements(
+    const { version, requirements: rawRequirements, schemeInfo, paymentRequired } = await getPaymentRequirements(
       response,
       options,
       body,
@@ -339,11 +515,14 @@ export const createPaymentHandler = (
     console.log('[x402] parsed requirements', requirements)
     const scheme = String((requirements as any).scheme ?? '').toLowerCase()
     const isDirectScheme = scheme === 'x402' || scheme === 'exact'
+    const headerName = version === 2 ? 'payment-signature' : 'x-payment'
 
     const walletSigner = await getWalletSigner()
     const signerAddress = walletSigner ? await walletSigner.getAddress() : null
 
-    const amountRaw = parseAmountRequired((requirements as any).maxAmountRequired ?? 0n)
+    const amountValue =
+      (requirements as any).maxAmountRequired ?? (requirements as any).amount ?? 0n
+    const amountRaw = parseAmountRequired(amountValue)
     const assetAddr = String((requirements as any).asset ?? '')
     const payTo = String((requirements as any).payTo ?? '')
     const isDefaultAsset =
@@ -366,6 +545,9 @@ export const createPaymentHandler = (
     onAmountReady?.(amountDisplay)
 
     if (isDirectScheme) {
+      if (version === 2) {
+        throw new Error('Direct x402 settlement not supported for v2 responses')
+      }
       console.log('[x402] direct settlement selected', {
         scheme,
         offered: schemeInfo.offered,
@@ -396,6 +578,7 @@ export const createPaymentHandler = (
 
       return {
         header: direct.paymentHeader,
+        headerName,
         amountDisplay: direct.amountDisplay,
         txHash: direct.txHash,
       }
@@ -403,7 +586,17 @@ export const createPaymentHandler = (
 
     console.log('[x402] signing payment via SDK service')
 
-    const signed = await signWithSdkService(requirements)
+    if (version === 2 && !paymentRequired) {
+      throw new Error('Missing paymentRequired details for v2 signing')
+    }
+
+    const signed =
+      version === 2
+        ? await signWithSdkServiceV2(
+            paymentRequired as X402PaymentRequired,
+            requirements as PaymentRequirementsV2
+          )
+        : await signWithSdkService(requirements)
     try {
       if (typeof atob === 'function') {
         const decoded = atob(signed.header)
@@ -430,6 +623,6 @@ export const createPaymentHandler = (
       onTabReady?.(tabInfo)
     }
 
-    return { header: signed.header, amountDisplay, tabInfo }
+    return { header: signed.header, headerName, amountDisplay, tabInfo }
   }
 }

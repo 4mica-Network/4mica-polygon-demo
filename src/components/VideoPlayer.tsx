@@ -3,7 +3,7 @@ import videojs from 'video.js'
 import type Player from 'video.js/dist/types/player'
 import 'video.js/dist/video-js.css'
 import { PaymentEvents, setupXhrOverride } from '../utils/videoJsXhrOverride'
-import type { PaymentTabInfo } from '../utils/paymentHandler'
+import type { PaymentHeaderResult } from '../utils/paymentHandler'
 
 interface VideoPlayerProps {
   src: string
@@ -13,7 +13,7 @@ interface VideoPlayerProps {
     options: any,
     body?: any,
     onAmountReady?: (amountDisplay: string) => void
-  ) => Promise<{ header: string; amountDisplay: string; txHash?: string; tabInfo?: PaymentTabInfo }>
+  ) => Promise<PaymentHeaderResult>
   paymentEvents?: PaymentEvents
 }
 

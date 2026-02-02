@@ -5,7 +5,7 @@ import './index.css'
 import App from './App'
 import { WalletProvider } from './context/WalletContext'
 
-// Ensure Buffer exists in the browser for sdk-4mica
+// Ensure Buffer exists in the browser for @4mica/sdk
 if (!(globalThis as any).Buffer) {
   ;(globalThis as any).Buffer = Buffer
 }

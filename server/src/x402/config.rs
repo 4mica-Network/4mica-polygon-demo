@@ -12,6 +12,9 @@ pub struct X402Config {
     #[envconfig(from = "X402_NETWORK", default = "polygon-amoy")]
     pub network: String,
 
+    #[envconfig(from = "X402_NETWORK_V2", default = "eip155:80002")]
+    pub network_v2: String,
+
     #[envconfig(from = "X402_PAY_TO")]
     pub pay_to: String,
 

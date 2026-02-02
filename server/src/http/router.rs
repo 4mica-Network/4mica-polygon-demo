@@ -2,13 +2,13 @@ use crate::http::{model::TabRequestParams, x402};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, Uri},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use log::error;
 use reqwest::Client;
-use rust_sdk_4mica::U256;
+use sdk_4mica::U256;
 use serde::Deserialize;
 use serde_json::Value;
 use server::x402::FacilitatorClient;
@@ -35,13 +35,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/stream/remote", get(handle_remote_stream))
         .route("/stream/{filename}", get(handle_stream))
         .with_state(state)
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::permissive().expose_headers([
+                HeaderName::from_static("payment-required"),
+                HeaderName::from_static("payment-response"),
+                HeaderName::from_static("x-payment"),
+            ]),
+        )
 }
 
 async fn handle_tab(State(state): State<AppState>, Json(body): Json<TabRequestParams>) -> Response {
     let tab = server::x402::request_tab(
         body.user_address,
-        body.payment_requirements,
+        body.payment_requirements.into_payment_requirements(),
         &state.facilitator,
     )
     .await;

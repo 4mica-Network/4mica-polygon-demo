@@ -6,8 +6,9 @@ use std::time::Duration;
 use url::Url;
 
 use crate::x402::model::{
-    FacilitatorSettleParams, FacilitatorSettleResponse, FacilitatorTabRequestParams,
-    FacilitatorTabResponse, FacilitatorVerifyParams, FacilitatorVerifyResponse,
+    FacilitatorSettleParams, FacilitatorSettleParamsV2, FacilitatorSettleResponse,
+    FacilitatorTabRequestParams, FacilitatorTabResponse, FacilitatorVerifyParams,
+    FacilitatorVerifyResponse,
 };
 
 /// A client for communicating with a remote x402 facilitator.
@@ -166,6 +167,15 @@ impl FacilitatorClient {
     pub async fn settle(
         &self,
         request: &FacilitatorSettleParams<'_>,
+    ) -> Result<FacilitatorSettleResponse, FacilitatorClientError> {
+        self.post_json(&self.settle_url, "POST /settle", request)
+            .await
+    }
+
+    /// Sends a `POST /settle` request to the facilitator with v2 requirements.
+    pub async fn settle_v2(
+        &self,
+        request: &FacilitatorSettleParamsV2<'_>,
     ) -> Result<FacilitatorSettleResponse, FacilitatorClientError> {
         self.post_json(&self.settle_url, "POST /settle", request)
             .await

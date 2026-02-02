@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { formatUnits, isAddress, parseUnits, type Signer } from 'ethers'
-import * as fourMica from 'sdk-4mica'
+import * as fourMica from '@4mica/sdk'
 import { TARGET_CHAIN_ID } from '../context/WalletContext'
 import { config } from '../config/env'
 import type { PaymentScheme } from '../utils/paymentHandler'

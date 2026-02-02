@@ -1,5 +1,5 @@
 import { config } from '../config/env'
-import type { PaymentTabInfo } from './paymentHandler'
+import type { PaymentHeaderResult } from './paymentHandler'
 import type { XhrUriConfig } from 'xhr'
 
 type XhrCallback = (error: any, response: any, body: any) => void
@@ -9,7 +9,7 @@ type PaymentHandler = (
   options: XhrUriConfig,
   body?: any,
   onAmountReady?: (amountDisplay: string) => void
-) => Promise<{ header: string; amountDisplay: string; txHash?: string; tabInfo?: PaymentTabInfo }>
+) => Promise<PaymentHeaderResult>
 
 export type PaymentEvents = {
   onPaymentRequested?: (chunkId: string, amount?: string) => void
@@ -131,15 +131,16 @@ export const setupXhrOverride = (paymentHandler: PaymentHandler, player: any, ev
           chunkMeta.set(key, { amount: amountDisplay })
           events?.onPaymentRequested?.(key, amountDisplay)
         })
-          .then(({ header, amountDisplay, txHash }) => {
+          .then(({ header, headerName, amountDisplay, txHash }) => {
             const key = chunkId ?? `${paymentCounter}`
             const existing = chunkMeta.get(key)
             chunkMeta.set(key, { amount: existing?.amount ?? amountDisplay, txHash })
             modifiedOptions.headers = modifiedOptions.headers || {}
-            modifiedOptions.headers['x-payment'] = header
-            console.log('[x402] retrying with x-payment header', {
+            modifiedOptions.headers[headerName] = header
+            console.log('[x402] retrying with payment header', {
               uri: modifiedOptions.uri,
               hasHeader: Boolean(header),
+              headerName,
             })
 
             const retryRequest = originalXhr(modifiedOptions, customCallback)

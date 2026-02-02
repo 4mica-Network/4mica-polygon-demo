@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import * as fourMica from 'sdk-4mica'
+import * as fourMica from '@4mica/sdk'
 import { config } from '../config/env'
 
 const boundFetch = (input: RequestInfo | URL, init?: RequestInit) => {

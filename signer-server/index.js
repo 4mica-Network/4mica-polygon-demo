@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { createServer } from 'node:http'
 import { JsonRpcProvider, Wallet, Contract, getBytes, isHexString, isAddress } from 'ethers'
-import { Client, ConfigBuilder, PaymentRequirements, ValidationError, X402Flow, validateGuaranteeTypedData } from 'sdk-4mica'
+import { Client, ConfigBuilder, ValidationError, X402Flow, validateGuaranteeTypedData } from '@4mica/sdk'
 
 const {
   SIGNER_PRIVATE_KEY,
@@ -138,7 +138,7 @@ const ensureSdkClient = async () => {
         cfg.rpcUrl(coreRpcUrl)
       }
       const builtCfg = cfg.walletPrivateKey(SIGNER_PRIVATE_KEY).build()
-      // sdk-4mica uses its own Core RPC; SIGNER_RPC_URL stays the on-chain provider
+      // @4mica/sdk uses its own Core RPC; SIGNER_RPC_URL stays the on-chain provider
       const client = await Client.new(builtCfg)
       sdkInitFailureCount = 0
       logInfo('SDK client initialized', {
@@ -174,6 +174,49 @@ const resolveChainId = async () => {
 }
 
 const normalizeAddress = addr => (typeof addr === 'string' ? addr.toLowerCase() : '')
+
+const toDecimalString = value => {
+  try {
+    return BigInt(value).toString()
+  } catch {
+    return value !== undefined && value !== null ? String(value) : ''
+  }
+}
+
+const normalizePaymentRequirements = raw => {
+  if (!raw || typeof raw !== 'object') return null
+  const normalized = { ...raw }
+  if (normalized.maxAmountRequired === undefined && normalized.max_amount_required !== undefined) {
+    normalized.maxAmountRequired = normalized.max_amount_required
+  }
+  if (normalized.amount === undefined && normalized.amount_required !== undefined) {
+    normalized.amount = normalized.amount_required
+  }
+  if (normalized.payTo === undefined && normalized.pay_to !== undefined) {
+    normalized.payTo = normalized.pay_to
+  }
+  if (normalized.maxTimeoutSeconds === undefined && normalized.max_timeout_seconds !== undefined) {
+    normalized.maxTimeoutSeconds = normalized.max_timeout_seconds
+  }
+  if (normalized.mimeType === undefined && normalized.mime_type !== undefined) {
+    normalized.mimeType = normalized.mime_type
+  }
+  if (normalized.outputSchema === undefined && normalized.output_schema !== undefined) {
+    normalized.outputSchema = normalized.output_schema
+  }
+  if (normalized.asset === undefined && normalized.asset_address !== undefined) {
+    normalized.asset = normalized.asset_address
+  }
+  const extraRaw = normalized.extra
+  if (extraRaw && typeof extraRaw === 'object' && !Array.isArray(extraRaw)) {
+    const extra = { ...extraRaw }
+    if (extra.tabEndpoint === undefined && extra.tab_endpoint !== undefined) {
+      extra.tabEndpoint = extra.tab_endpoint
+    }
+    normalized.extra = extra
+  }
+  return normalized
+}
 
 const serializePublicParams = params => {
   const rawKey = params?.publicKey
@@ -446,41 +489,59 @@ const server = createServer(async (req, res) => {
     if (method === 'POST' && url === '/x402/sign') {
       try {
         const body = await parseBody(req)
-        const { paymentRequirements, userAddress } = body || {}
-        if (!paymentRequirements || typeof paymentRequirements !== 'object') {
-          sendError(res, 400, 'paymentRequirements is required', requestId)
-          return
-        }
+        const { paymentRequirements, paymentRequired, accepted, userAddress } = body || {}
 
         const client = await ensureSdkClient()
         const flow = X402Flow.fromClient(client)
-        const requirements = PaymentRequirements.fromRaw(paymentRequirements)
         const signerAddress = await walletAddressPromise
         if (userAddress && normalizeAddress(userAddress) !== normalizeAddress(signerAddress)) {
           sendError(res, 400, 'userAddress does not match signer address', requestId)
           return
         }
 
-        const payment = await flow.signPayment(requirements, signerAddress)
-        const claims = payment.claims
+        let payment
+        let scheme = ''
+        let network = ''
+        if (paymentRequired && typeof paymentRequired === 'object') {
+          const candidates = Array.isArray(paymentRequired.accepts) ? paymentRequired.accepts : []
+          const acceptedReq = normalizePaymentRequirements(accepted ?? candidates[0])
+          if (!acceptedReq) {
+            sendError(res, 400, 'accepted paymentRequirements is required for v2', requestId)
+            return
+          }
+          payment = await flow.signPaymentV2(paymentRequired, acceptedReq, signerAddress)
+          scheme = acceptedReq.scheme
+          network = acceptedReq.network
+        } else {
+          const requirements = normalizePaymentRequirements(paymentRequirements)
+          if (!requirements) {
+            sendError(res, 400, 'paymentRequirements is required', requestId)
+            return
+          }
+          payment = await flow.signPayment(requirements, signerAddress)
+          scheme = requirements.scheme
+          network = requirements.network
+        }
+        const payloadClaims = payment.payload?.claims ?? {}
+        const claims = {
+          userAddress: payloadClaims.user_address ?? payloadClaims.userAddress ?? '',
+          recipientAddress: payloadClaims.recipient_address ?? payloadClaims.recipientAddress ?? '',
+          tabId: toDecimalString(payloadClaims.tab_id ?? payloadClaims.tabId ?? ''),
+          reqId: toDecimalString(payloadClaims.req_id ?? payloadClaims.reqId ?? ''),
+          amount: toDecimalString(payloadClaims.amount ?? ''),
+          assetAddress: payloadClaims.asset_address ?? payloadClaims.assetAddress ?? '',
+          timestamp: Number(payloadClaims.timestamp ?? 0),
+        }
         const payload = {
           header: payment.header,
-          claims: {
-            userAddress: claims.userAddress,
-            recipientAddress: claims.recipientAddress,
-            tabId: claims.tabId.toString(),
-            reqId: claims.reqId.toString(),
-            amount: claims.amount.toString(),
-            assetAddress: claims.assetAddress,
-            timestamp: claims.timestamp,
-          },
+          claims,
           signature: payment.signature,
         }
         sendJson(res, 200, payload, requestId)
         logInfo('x402 sign request served', {
           requestId,
-          scheme: requirements.scheme,
-          network: requirements.network,
+          scheme,
+          network,
           tabId: payload.claims.tabId,
         })
       } catch (err) {

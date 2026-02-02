@@ -1,14 +1,41 @@
-use rust_sdk_4mica::x402::PaymentRequirements;
+use sdk_4mica::x402::PaymentRequirements;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PaymentEnvelope {
-    pub x402_version: u64,
+pub struct X402ResourceInfo {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentRequirementsV2 {
     pub scheme: String,
     pub network: String,
-    pub payload: Value,
+    pub amount: String,
+    pub asset: String,
+    pub pay_to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_timeout_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentRequiredV2 {
+    pub x402_version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub resource: X402ResourceInfo,
+    pub accepts: Vec<PaymentRequirementsV2>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -16,10 +43,24 @@ pub struct PaymentEnvelope {
 pub struct FacilitatorVerifyParams<'a> {
     pub x402_version: u64,
     pub payment_header: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_payload: Option<Value>,
     pub payment_requirements: &'a PaymentRequirements,
 }
 
 pub type FacilitatorSettleParams<'a> = FacilitatorVerifyParams<'a>;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacilitatorVerifyParamsV2<'a> {
+    pub x402_version: u64,
+    pub payment_header: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_payload: Option<Value>,
+    pub payment_requirements: &'a PaymentRequirementsV2,
+}
+
+pub type FacilitatorSettleParamsV2<'a> = FacilitatorVerifyParamsV2<'a>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

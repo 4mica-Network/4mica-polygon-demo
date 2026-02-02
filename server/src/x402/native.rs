@@ -1,12 +1,11 @@
 use log::info;
 use reqwest::Client;
-use rust_sdk_4mica::{U256, x402::PaymentRequirements};
+use sdk_4mica::{U256, x402::PaymentRequirements};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::str::FromStr;
 
 use crate::error::PaymentError;
-use crate::x402::model::PaymentEnvelope;
 
 const ZERO_ADDRESS: &str = "0000000000000000000000000000000000000000";
 
@@ -136,14 +135,13 @@ async fn validate_native_transfer(
 }
 
 pub async fn verify_native_payment(
-    envelope: &PaymentEnvelope,
+    envelope: &Value,
     requirements: &PaymentRequirements,
     rpc_url: &str,
 ) -> Result<(), PaymentError> {
     let tx_hash = envelope
-        .payload
-        .get("txHash")
-        .or_else(|| envelope.payload.get("tx_hash"))
+        .get("payload")
+        .and_then(|payload| payload.get("txHash").or_else(|| payload.get("tx_hash")))
         .and_then(|v| v.as_str())
         .ok_or(PaymentError::MissingTxHash)?;
     let client = Client::new();

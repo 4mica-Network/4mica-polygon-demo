@@ -34,7 +34,7 @@ Stop the stack with `docker compose down`.
 
 - `server` (Rust, built with nightly + OpenSSL build deps to support edition 2024) reads HLS segments from `/app/data/hls` and listens on `:3000`.
 - `web` (nginx) serves the built React app and proxies `/stream`, `/tab`, and `/rpc` to the `server` container. The nginx config is baked into `docker/Dockerfile.web`. Port `80` in the container maps to `8080` on the host by default.
-- `web` build installs the published `sdk-4mica@0.2.1` package from npm during `npm ci`.
+- `web` build installs the published `@4mica/sdk@0.5.2` package from npm during `npm ci`.
 - `signer` (Node) runs `npm run signer` with your `SIGNER_PRIVATE_KEY` and listens on `:4000` (exposed to the host). The client calls this service for signatures so the key stays off the frontend.
 
 ## Configuration notes

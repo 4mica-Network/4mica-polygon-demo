@@ -15,6 +15,9 @@ SIGNER_CHAIN_ID=80002
 # Server logging (optional, for 4mica tab logs)
 4MICA_WALLET_PRIVATE_KEY=your_wallet_private_key_here
 
+# Optional: x402 v2 CAIP-2 network identifier
+X402_NETWORK_V2=eip155:80002
+
 # Client (baked into the Vite build)
 VITE_PLAYLIST_URL=http://localhost:8080/stream/big-buck-bunny.m3u8
 VITE_STREAM_SERVER_URL=http://localhost:8080

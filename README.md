@@ -20,6 +20,7 @@ cp .env.default .env
 - `X402_ENABLED` - Enable x402 payment flow
 - `X402_PAY_TO` - Wallet address to receive payments
 - `X402_RPC_URL` - JSON-RPC endpoint used to verify on-chain x402 payments
+- `X402_NETWORK_V2` - CAIP-2 network identifier used for x402 v2 responses (default: eip155:80002)
 - `4MICA_WALLET_PRIVATE_KEY` - Private key used by the Rust server for 4mica tab logging (not exposed to the client)
 
 **Signer (Node service, keeps the key off the client):**

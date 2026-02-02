@@ -1,10 +1,9 @@
 use log::{info, warn};
-use rust_sdk_4mica::{Client as FourMicaClient, ConfigBuilder, U256};
+use sdk_4mica::{Client as FourMicaClient, ConfigBuilder, U256};
 use serde_json::Value;
 use std::str::FromStr;
 
 use crate::x402::config::X402Config;
-use crate::x402::model::PaymentEnvelope;
 
 fn parse_u256_value(raw: &str) -> Result<U256, String> {
     let trimmed = raw.trim();
@@ -18,10 +17,10 @@ fn parse_u256_value(raw: &str) -> Result<U256, String> {
     }
 }
 
-fn extract_tab_id(envelope: &PaymentEnvelope) -> Option<String> {
+fn extract_tab_id(envelope: &Value) -> Option<String> {
     envelope
-        .payload
-        .get("claims")
+        .get("payload")
+        .and_then(|payload| payload.get("claims"))
         .and_then(|claims| claims.get("tabId").or_else(|| claims.get("tab_id")))
         .and_then(|tab| match tab {
             Value::String(s) => Some(s.clone()),
@@ -30,10 +29,10 @@ fn extract_tab_id(envelope: &PaymentEnvelope) -> Option<String> {
         })
 }
 
-fn extract_claim_field(envelope: &PaymentEnvelope, key: &str) -> Option<String> {
+fn extract_claim_field(envelope: &Value, key: &str) -> Option<String> {
     envelope
-        .payload
-        .get("claims")
+        .get("payload")
+        .and_then(|payload| payload.get("claims"))
         .and_then(|claims| claims.get(key))
         .and_then(|val| match val {
             Value::String(s) => Some(s.clone()),
@@ -185,7 +184,7 @@ async fn log_tab_snapshot(tab_id: U256, config: &X402Config) {
     }
 }
 
-pub async fn log_fourmica_payment_info(envelope: &PaymentEnvelope, config: &X402Config) {
+pub async fn log_fourmica_payment_info(envelope: &Value, config: &X402Config) {
     let tab_id_raw = extract_tab_id(envelope);
     let amount_raw = extract_claim_field(envelope, "amount");
     let user_addr = extract_claim_field(envelope, "userAddress")
