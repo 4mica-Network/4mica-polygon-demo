@@ -18,11 +18,10 @@ fn encode_payment_required_header(required: &server::x402::PaymentRequiredV2) ->
 
 fn build_payment_required_response(
     payment_requirements: Vec<sdk_4mica::x402::PaymentRequirements>,
-    payment_required_v2: &server::x402::PaymentRequiredV2,
+    payment_required_v2: Option<&server::x402::PaymentRequiredV2>,
     error: Option<String>,
 ) -> Response {
-    let mut payment_required_v2 = payment_required_v2.clone();
-    payment_required_v2.error = error.clone();
+    let error_clone = error.clone();
     let mut resp = (
         StatusCode::PAYMENT_REQUIRED,
         Json(PaymentRequiredResponse {
@@ -32,9 +31,13 @@ fn build_payment_required_response(
         }),
     )
         .into_response();
-    if let Some(header) = encode_payment_required_header(&payment_required_v2) {
-        resp.headers_mut()
-            .insert("payment-required", header);
+    if let Some(payment_required_v2) = payment_required_v2 {
+        let mut payment_required_v2 = payment_required_v2.clone();
+        payment_required_v2.error = error_clone;
+        if let Some(header) = encode_payment_required_header(&payment_required_v2) {
+            resp.headers_mut()
+                .insert("payment-required", header);
+        }
     }
     resp
 }
@@ -91,7 +94,7 @@ pub async fn handle_x402_paywall(
         warn!("x402 payment header missing; returning 402 with requirements");
         return Err(build_payment_required_response(
             payment_requirements,
-            &payment_required_v2,
+            Some(&payment_required_v2),
             None,
         ));
     };
@@ -101,7 +104,7 @@ pub async fn handle_x402_paywall(
             error!("Invalid payment header: {}", e);
             return Err(build_payment_required_response(
                 payment_requirements,
-                &payment_required_v2,
+                Some(&payment_required_v2),
                 Some("Invalid payment header".to_string()),
             ));
         }
@@ -119,7 +122,7 @@ pub async fn handle_x402_paywall(
         error!("Payment settlement failed: {}", e);
         return Err(build_payment_required_response(
             payment_requirements,
-            &payment_required_v2,
+            Some(&payment_required_v2),
             Some(format!("Payment settlement failed: {}", e)),
         ));
     }

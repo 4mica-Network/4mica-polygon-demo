@@ -30,4 +30,7 @@ pub struct X402Config {
 
     #[envconfig(from = "X402_FACILITATOR_URL", default = "https://x402.4mica.xyz/")]
     pub facilitator_url: Url,
+
+    #[envconfig(from = "X402_DIRECT_SETTLEMENT", default = "false")]
+    pub direct_settlement: bool,
 }

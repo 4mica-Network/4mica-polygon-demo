@@ -1,4 +1,6 @@
-import { Signer, isAddress, ZeroAddress, formatUnits } from 'ethers'
+import { Signer, isAddress, ZeroAddress, formatUnits, Contract } from 'ethers'
+import { config } from '../config/env'
+import { RemoteSigner } from './RemoteSigner'
 
 type TransferAuthorizationParams = {
   from: string
@@ -133,6 +135,38 @@ const createExactPaymentHeader = async (
   return encodeBase64Payload(payload)
 }
 
+const sendRemoteTransfer = async (params: {
+  asset: string
+  to: string
+  amount: bigint
+  confirmations?: number
+}): Promise<string> => {
+  if (!config.signerServiceUrl) {
+    throw new Error('Missing signer service URL for remote transfers')
+  }
+  const url = `${config.signerServiceUrl.replace(/\/+$/, '')}/x402/transfer`
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      asset: params.asset,
+      to: params.to,
+      amount: params.amount.toString(),
+      confirmations: params.confirmations ?? 2,
+    }),
+  })
+  const text = await resp.text()
+  if (!resp.ok) {
+    throw new Error(text || `transfer request failed with ${resp.status}`)
+  }
+  const data = text ? JSON.parse(text) : {}
+  const txHash = data?.txHash || data?.hash
+  if (!txHash || typeof txHash !== 'string') {
+    throw new Error('Signer service returned no transaction hash')
+  }
+  return txHash
+}
+
 export const settleDirectPayment = async (
   signer: Signer,
   from: string,
@@ -143,6 +177,7 @@ export const settleDirectPayment = async (
   decimals: number,
   symbol: string,
   expectedChainId?: number,
+  directOnchain?: boolean,
   maxTimeoutSeconds?: number,
   tokenName?: string,
   tokenVersion?: string
@@ -166,9 +201,19 @@ export const settleDirectPayment = async (
 
   const isNative = !assetAddr || assetAddr.toLowerCase() === ZeroAddress.toLowerCase()
   if (isNative) {
-    const tx = await signer.sendTransaction({ to: payTo, value: amountRaw })
-    const receipt = await tx.wait(2)
-    const txHash = receipt?.hash ?? tx.hash
+    let txHash: string
+    if (signer instanceof RemoteSigner) {
+      txHash = await sendRemoteTransfer({
+        asset: assetAddr || ZeroAddress,
+        to: payTo,
+        amount: amountRaw,
+        confirmations: 2,
+      })
+    } else {
+      const tx = await signer.sendTransaction({ to: payTo, value: amountRaw })
+      const receipt = await tx.wait(2)
+      txHash = receipt?.hash ?? tx.hash
+    }
     console.log('[x402] direct native payment sent', { txHash, to: payTo, amount: amountRaw.toString() })
 
     const nativePayload = {
@@ -193,6 +238,47 @@ export const settleDirectPayment = async (
 
   if (!isAddress(assetAddr)) {
     throw new Error('Invalid asset address in payment requirements')
+  }
+
+  if (directOnchain) {
+    let txHash: string
+    if (signer instanceof RemoteSigner) {
+      txHash = await sendRemoteTransfer({
+        asset: assetAddr,
+        to: payTo,
+        amount: amountRaw,
+        confirmations: 2,
+      })
+    } else {
+      const erc20 = new Contract(
+        assetAddr,
+        ['function transfer(address to, uint256 value) returns (bool)'],
+        signer
+      )
+      const tx = await erc20.transfer(payTo, amountRaw)
+      const receipt = await tx.wait(2)
+      txHash = receipt?.hash ?? tx.hash
+    }
+    console.log('[x402] direct erc20 payment sent', { txHash, to: payTo, amount: amountRaw.toString() })
+
+    const erc20Payload = {
+      x402Version: 1,
+      scheme: 'exact',
+      network,
+      payload: {
+        txHash,
+        payTo,
+        asset: assetAddr,
+        amount: amountRaw.toString(),
+      },
+    }
+    const paymentHeader = encodeBase64Payload(erc20Payload)
+
+    return {
+      paymentHeader,
+      amountDisplay: `${formatUnits(amountRaw, decimals)} ${symbol}`,
+      txHash,
+    }
   }
 
   const paymentHeader = await createExactPaymentHeader(

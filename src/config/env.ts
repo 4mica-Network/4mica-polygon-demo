@@ -6,6 +6,7 @@ interface Config {
   rpcProxyUrl: string
   enableExternalStreaming: boolean
   signerServiceUrl: string
+  directSettlement: boolean
 }
 
 export const config: Config = {
@@ -16,4 +17,5 @@ export const config: Config = {
   rpcProxyUrl: import.meta.env.VITE_ETH_RPC_PROXY_URL || 'https://polygon-amoy-bor-rpc.publicnode.com',
   enableExternalStreaming: (import.meta.env.VITE_ENABLE_EXTERNAL_STREAMING || 'false').toLowerCase() !== 'false',
   signerServiceUrl: import.meta.env.VITE_SIGNER_SERVICE_URL || 'http://localhost:4000',
+  directSettlement: (import.meta.env.VITE_X402_DIRECT_SETTLEMENT || 'false').toLowerCase() === 'true',
 }

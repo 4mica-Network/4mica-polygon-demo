@@ -174,6 +174,7 @@ const resolveChainId = async () => {
 }
 
 const normalizeAddress = addr => (typeof addr === 'string' ? addr.toLowerCase() : '')
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 const toDecimalString = value => {
   try {
@@ -551,6 +552,79 @@ const server = createServer(async (req, res) => {
           logError('x402 sign failed', { requestId, ...formatError(err) })
         }
         sendError(res, status, message, requestId)
+      }
+      return
+    }
+
+    if (method === 'POST' && url === '/x402/transfer') {
+      try {
+        if (!provider) {
+          sendError(res, 500, 'SIGNER_RPC_URL is required for on-chain transfers', requestId)
+          return
+        }
+
+        const body = await parseBody(req)
+        const { asset, to, amount, confirmations } = body || {}
+        const target = typeof to === 'string' ? to.trim() : ''
+        const assetAddr = typeof asset === 'string' ? asset.trim() : ''
+        const rawAmount = toDecimalString(amount)
+        if (!target || !isAddress(target)) {
+          sendError(res, 400, 'to must be a valid address', requestId)
+          return
+        }
+        if (normalizeAddress(target) !== normalizeAddress(expectedPayTo)) {
+          sendError(res, 400, 'recipient must match X402_PAY_TO', requestId)
+          return
+        }
+        if (!rawAmount) {
+          sendError(res, 400, 'amount is required', requestId)
+          return
+        }
+        let amountBig
+        try {
+          amountBig = BigInt(rawAmount)
+        } catch {
+          sendError(res, 400, 'amount must be a valid integer', requestId)
+          return
+        }
+        if (amountBig <= 0n) {
+          sendError(res, 400, 'amount must be greater than zero', requestId)
+          return
+        }
+
+        const isNative =
+          !assetAddr || normalizeAddress(assetAddr) === normalizeAddress(ZERO_ADDRESS)
+
+        let tx
+        if (isNative) {
+          tx = await wallet.sendTransaction({ to: target, value: rawAmount })
+        } else {
+          if (!isAddress(assetAddr)) {
+            sendError(res, 400, 'asset must be a valid address', requestId)
+            return
+          }
+          const erc20 = new Contract(
+            assetAddr,
+            ['function transfer(address to, uint256 value) returns (bool)'],
+            wallet
+          )
+          tx = await erc20.transfer(target, rawAmount)
+        }
+
+        const waitFor = Number(confirmations ?? 2)
+        await tx.wait(Number.isFinite(waitFor) && waitFor >= 0 ? waitFor : 2)
+
+        sendJson(res, 200, { txHash: tx.hash }, requestId)
+        logInfo('x402 transfer sent', {
+          requestId,
+          to: target,
+          asset: assetAddr || ZERO_ADDRESS,
+          amount: rawAmount,
+          txHash: tx.hash,
+        })
+      } catch (err) {
+        logError('x402 transfer failed', { requestId, ...formatError(err) })
+        sendError(res, 500, err instanceof Error ? err.message : 'x402 transfer failed', requestId)
       }
       return
     }

@@ -571,6 +571,7 @@ export const createPaymentHandler = (
         decimals,
         symbol,
         coreParams?.chainId,
+        config.directSettlement,
         maxTimeoutSeconds,
         tokenName,
         tokenVersion

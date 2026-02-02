@@ -57,36 +57,41 @@ pub fn build_accepted_payment_requirements(
     let description = resource
         .as_ref()
         .map(|r| format!("Access to resource: {}", r));
-    vec![
-        PaymentRequirements {
-            scheme: config.scheme_4mica.clone(),
-            network: config.network.clone(),
-            max_amount_required: max_amount_required.clone(),
-            resource: resource.clone(),
-            description: description.clone(),
-            mime_type: Some("video/mp2t".to_string()),
-            output_schema: None,
-            pay_to: config.pay_to.clone(),
-            max_timeout_seconds: Some(3600),
-            asset: config.asset.clone(),
-            extra: Some(json!({
-                "tabEndpoint": tab_endpoint,
-            })),
-        },
-        PaymentRequirements {
-            scheme: "exact".to_string(),
-            network: config.network.clone(),
-            max_amount_required,
-            resource,
-            description,
-            mime_type: Some("video/mp2t".to_string()),
-            output_schema: None,
-            pay_to: config.pay_to.clone(),
-            max_timeout_seconds: Some(3600),
-            asset: config.asset.clone(),
-            extra: None,
-        },
-    ]
+    let exact = PaymentRequirements {
+        scheme: "exact".to_string(),
+        network: config.network.clone(),
+        max_amount_required: max_amount_required.clone(),
+        resource: resource.clone(),
+        description: description.clone(),
+        mime_type: Some("video/mp2t".to_string()),
+        output_schema: None,
+        pay_to: config.pay_to.clone(),
+        max_timeout_seconds: Some(3600),
+        asset: config.asset.clone(),
+        extra: None,
+    };
+
+    let mut requirements = vec![PaymentRequirements {
+        scheme: config.scheme_4mica.clone(),
+        network: config.network.clone(),
+        max_amount_required,
+        resource,
+        description,
+        mime_type: Some("video/mp2t".to_string()),
+        output_schema: None,
+        pay_to: config.pay_to.clone(),
+        max_timeout_seconds: Some(3600),
+        asset: config.asset.clone(),
+        extra: Some(json!({
+            "tabEndpoint": tab_endpoint,
+        })),
+    }];
+
+    if config.direct_settlement {
+        requirements.push(exact);
+    }
+
+    requirements
 }
 
 pub fn build_accepted_payment_requirements_v2(
@@ -262,6 +267,26 @@ pub async fn settle_payment(
         x402_version, scheme, network
     );
 
+    let scheme_lower = scheme.to_lowercase();
+    if scheme_lower == "exact" {
+        if !config.direct_settlement {
+            return Err(PaymentError::Other(
+                "Direct settlement disabled; exact payments not supported".into(),
+            ));
+        }
+        if x402_version == 2 {
+            return Err(PaymentError::Other(
+                "Direct settlement does not support v2 payments".into(),
+            ));
+        }
+
+        let selected_requirement =
+            find_matching_payment_requirements(&scheme, &network, accepted_payment_requirements)?;
+
+        return native::verify_onchain_payment(&envelope, selected_requirement, &config.rpc_url)
+            .await;
+    }
+
     if x402_version == 2 {
         let selected_requirement =
             find_matching_payment_requirements_v2(&scheme, &network, accepted_payment_requirements_v2)?;
@@ -325,12 +350,6 @@ pub async fn settle_payment(
         selected_requirement.asset,
         selected_requirement.max_amount_required
     );
-
-    let scheme_lower = scheme.to_lowercase();
-    if scheme_lower == "exact" && native::is_native_asset(&selected_requirement.asset) {
-        return native::verify_native_payment(&envelope, selected_requirement, &config.rpc_url)
-            .await;
-    }
 
     info!(
         "Calling facilitator /settle for scheme={} network={}",
