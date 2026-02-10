@@ -137,6 +137,13 @@ const ensureSdkClient = async () => {
       if (coreRpcUrl) {
         cfg.rpcUrl(coreRpcUrl)
       }
+      if (
+        !process.env['4MICA_BEARER_TOKEN'] &&
+        !process.env['4MICA_AUTH_URL'] &&
+        !process.env['4MICA_AUTH_REFRESH_MARGIN_SECS']
+      ) {
+        cfg.enableAuth()
+      }
       const builtCfg = cfg.walletPrivateKey(SIGNER_PRIVATE_KEY).build()
       // @4mica/sdk uses its own Core RPC; SIGNER_RPC_URL stays the on-chain provider
       const client = await Client.new(builtCfg)
